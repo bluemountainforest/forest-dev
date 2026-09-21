@@ -9,11 +9,12 @@
     <div id="systemMessageBar" aria-live="polite">Ready.</div>
 
     <section id="loginPanel">
-      <h2>Sign in</h2>
+      <h2 id="loginTitle">Sign in</h2>
       <form id="loginForm">
         <label>Username <input id="loginUsername" autocomplete="username" required></label>
         <label>Password <input id="loginPassword" type="password" autocomplete="current-password" required></label>
-        <button type="submit">Sign in</button>
+        <label><input id="adminLoginCheckbox" type="checkbox"> admin login</label>
+        <button id="loginSubmitBtn" type="submit">Continue</button>
       </form>
       <p id="loginMessage" aria-live="polite"></p>
     </section>
@@ -26,6 +27,7 @@
           <button type="button" data-tab="providers" class="tab-button">providers</button>
           <button type="button" data-tab="instruction" class="tab-button">instruction</button>
           <button type="button" data-tab="profile" class="tab-button">profile</button>
+          <button type="button" data-tab="admin" id="adminTabButton" class="tab-button" hidden>admin</button>
         </div>
 
         <div id="providerTabChat">
@@ -107,15 +109,16 @@
           <p id="profileStatus">Signed out</p>
           <button type="button" id="signOutBtn">Sign out</button>
 
-          <h3>Account setup</h3>
-          <p>Set the server account password for this local installation. The password is also used to unlock the encrypted local app data.</p>
+          <div id="localProfileControls">
+          <h3>Local account</h3>
+          <p>Set the password for your local app access. This password unlocks the local encrypted vault on this device.</p>
           <label>Current password <input id="currentPasswordInput" type="password" autocomplete="current-password"></label>
           <label>New password <input id="newPasswordInput" type="password" autocomplete="new-password"></label>
           <label>Confirm new password <input id="confirmPasswordInput" type="password" autocomplete="new-password"></label>
           <button type="button" id="changePasswordBtn">change password</button>
 
           <h3>Reset local vault</h3>
-          <p>This clears the locally encrypted app data and starts the browser state fresh. It does not change the server-side account settings.</p>
+          <p>This clears the locally encrypted app data and starts the browser state fresh. It does not change the server-side admin account settings.</p>
           <button type="button" id="resetVaultBtn">reset local vault</button>
 
           <h3>Backup</h3>
@@ -131,6 +134,21 @@
             </tbody>
           </table>
           <input id="restoreFileInput" type="file" accept="application/json" hidden>
+          </div>
+
+          <div id="adminProfileControls" hidden>
+            <h3>Admin account</h3>
+            <p>Change the server-side admin account password.</p>
+            <label>Current admin password <input id="adminCurrentPasswordInput" type="password" autocomplete="current-password"></label>
+            <label>New admin password <input id="adminNewPasswordInput" type="password" autocomplete="new-password"></label>
+            <label>Confirm admin password <input id="adminConfirmPasswordInput" type="password" autocomplete="new-password"></label>
+            <button type="button" id="adminChangePasswordBtn">change admin password</button>
+          </div>
+        </div>
+
+        <div id="providerTabAdmin" hidden>
+          <h3>Admin</h3>
+          <p id="adminStatus">Admin signed out.</p>
         </div>
       </section>
     </main>
@@ -142,10 +160,12 @@
       const AGENT_POOL_KEY = 'forest-agent-pool';
       const PROMPT_KEY = 'forest-agent-system-prompt';
       const VAULT_KEY = 'forest-encrypted-vault';
+      const LOCAL_ACCOUNT_KEY = 'forest-local-account';
       let vaultKey = null;
       let vaultData = {};
       let vaultWrite = Promise.resolve();
       let currentUsername = '';
+      let currentRole = 'local';
 
       const defaultSystemPrompt = 'You are a helpful local agent. Reply in short messages in the chat and keep responses concise. Do not overthink or use unnecessary tokens unless the user asks for more detail. End each response with: {provider name} | {model name} | {amount of tokens used} | {depth of your level of thinking}';
       const legacySystemPrompt = 'You are a helpful local agent. Reply in short messages in the chat and keep responses concise. Do not overthink or use unnecessary tokens unless the user asks for more detail.';
@@ -201,6 +221,35 @@
         return btoa(binary);
       }
 
+      function clearLocalAppData() {
+        clearLocalVaultData();
+        localStorage.removeItem(LOCAL_ACCOUNT_KEY);
+      }
+
+      function clearLocalVaultData() {
+        localStorage.removeItem(VAULT_KEY);
+        localStorage.removeItem(PROVIDERS_KEY);
+        localStorage.removeItem(AGENT_POOL_KEY);
+        localStorage.removeItem(PROMPT_KEY);
+        localStorage.removeItem(SESSION_KEY);
+        localStorage.removeItem(SESSIONS_KEY);
+        vaultData = {};
+        vaultKey = null;
+      }
+
+      function isVaultAccessError(error) {
+        if (!error) {
+          return false;
+        }
+
+        const message = String(error.message || '');
+        return error.name === 'OperationError'
+          || message.includes('decrypt')
+          || message.includes('operation-specific reason')
+          || message.includes('Failed to execute')
+          || message.includes('Password does not match');
+      }
+
       function base64ToBytes(value) {
         return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
       }
@@ -241,18 +290,35 @@
         queueVaultWrite();
       }
 
-      async function unlockVault(password) {
+      async function unlockVault(password, recoverInvalidVault = false) {
         vaultKey = await deriveVaultKey(password);
         const encryptedValue = localStorage.getItem(VAULT_KEY);
 
         if (encryptedValue) {
-          const stored = JSON.parse(encryptedValue);
-          const decrypted = await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: base64ToBytes(stored.iv) },
-            vaultKey,
-            base64ToBytes(stored.data)
-          );
-          vaultData = JSON.parse(new TextDecoder().decode(decrypted));
+          try {
+            const stored = JSON.parse(encryptedValue);
+            const decrypted = await crypto.subtle.decrypt(
+              { name: 'AES-GCM', iv: base64ToBytes(stored.iv) },
+              vaultKey,
+              base64ToBytes(stored.data)
+            );
+            vaultData = JSON.parse(new TextDecoder().decode(decrypted));
+          } catch (error) {
+            if (recoverInvalidVault) {
+              clearLocalVaultData();
+              vaultKey = await deriveVaultKey(password);
+              vaultData = {
+                [PROVIDERS_KEY]: defaultProviders,
+                [AGENT_POOL_KEY]: [],
+                [PROMPT_KEY]: defaultSystemPrompt,
+                [SESSION_KEY]: null,
+                [SESSIONS_KEY]: []
+              };
+              await persistVault();
+              return;
+            }
+            throw new Error('Password does not match the saved encrypted app data. Reset the local vault or create a fresh local account.');
+          }
         } else {
           vaultData = {
             [PROVIDERS_KEY]: JSON.parse(localStorage.getItem(PROVIDERS_KEY) || 'null') || defaultProviders,
@@ -370,6 +436,115 @@
 
         bar.textContent = text;
         bar.dataset.type = type;
+      }
+
+      function updateRoleUi() {
+        const isAdmin = currentRole === 'admin';
+        document.getElementById('adminTabButton').hidden = !isAdmin;
+        document.getElementById('providerTabAdmin').hidden = !isAdmin;
+        document.getElementById('localProfileControls').hidden = isAdmin;
+        document.getElementById('adminProfileControls').hidden = !isAdmin;
+        document.getElementById('adminStatus').textContent = isAdmin
+          ? `Signed in as ${currentUsername}`
+          : 'Admin signed out.';
+      }
+
+      function generatePasswordHash(password, saltBase64) {
+        const saltSource = typeof saltBase64 === 'string' && saltBase64.trim() ? saltBase64 : null;
+        const salt = saltSource ? base64ToBytes(saltSource) : crypto.getRandomValues(new Uint8Array(16));
+
+        return crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits'])
+          .then((keyMaterial) => crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' },
+            keyMaterial,
+            256
+          ))
+          .then((bits) => ({
+            hash: bytesToBase64(new Uint8Array(bits)),
+            salt: bytesToBase64(salt)
+          }))
+          .catch((error) => {
+            throw new Error(`Local account hashing failed: ${error.message || 'operation failed'}`);
+          });
+      }
+
+      async function loadLocalAccount() {
+        const raw = localStorage.getItem(LOCAL_ACCOUNT_KEY);
+        if (!raw) {
+          return null;
+        }
+        try {
+          const account = JSON.parse(raw);
+          if (!account || typeof account !== 'object'
+            || typeof account.username !== 'string'
+            || !account.username.trim()
+            || typeof account.passwordHash !== 'string'
+            || !account.passwordHash
+            || typeof account.salt !== 'string'
+            || !account.salt) {
+            localStorage.removeItem(LOCAL_ACCOUNT_KEY);
+            return null;
+          }
+          return account;
+        } catch (_error) {
+          localStorage.removeItem(LOCAL_ACCOUNT_KEY);
+          return null;
+        }
+      }
+
+      async function verifyLocalAccount(username, password) {
+        const account = await loadLocalAccount();
+        if (!account || !account.username || !account.passwordHash || !account.salt) {
+          return null;
+        }
+        if (String(account.username).trim() !== String(username).trim()) {
+          return null;
+        }
+
+        try {
+          const hashResult = await generatePasswordHash(password, account.salt);
+          return hashResult.hash === account.passwordHash ? account : null;
+        } catch (_error) {
+          localStorage.removeItem(LOCAL_ACCOUNT_KEY);
+          return null;
+        }
+      }
+
+      async function createLocalAccount(username, password) {
+        const trimmedUsername = String(username || '').trim();
+        const safePassword = String(password || '');
+        if (!trimmedUsername || !safePassword) {
+          throw new Error('A username and password are required for local access.');
+        }
+
+        const hashResult = await generatePasswordHash(safePassword, null);
+        const account = {
+          username: trimmedUsername,
+          passwordHash: hashResult.hash,
+          salt: hashResult.salt,
+          createdAt: new Date().toISOString()
+        };
+        localStorage.setItem(LOCAL_ACCOUNT_KEY, JSON.stringify(account));
+        return account;
+      }
+
+      async function changeLocalPassword(currentPassword, newPassword) {
+        const currentAccount = await loadLocalAccount();
+        if (!currentAccount) {
+          throw new Error('No local account exists yet. Create one first.');
+        }
+        const verified = await verifyLocalAccount(currentAccount.username, currentPassword);
+        if (!verified) {
+          throw new Error('Current local password is incorrect.');
+        }
+        if (String(newPassword || '').length < 4) {
+          throw new Error('The new local password must be at least 4 characters long.');
+        }
+        const updated = await createLocalAccount(currentAccount.username, newPassword);
+        if (!updated) {
+          throw new Error('Local account update failed.');
+        }
+        return updated;
       }
 
       function getActivePoolManager() {
@@ -1166,15 +1341,7 @@
           return;
         }
 
-        localStorage.removeItem(VAULT_KEY);
-        localStorage.removeItem(PROVIDERS_KEY);
-        localStorage.removeItem(AGENT_POOL_KEY);
-        localStorage.removeItem(PROMPT_KEY);
-        localStorage.removeItem(SESSION_KEY);
-        localStorage.removeItem(SESSIONS_KEY);
-
-        vaultData = {};
-        vaultKey = null;
+        clearLocalAppData();
         currentUsername = '';
         state.providers = normalizeProviders(defaultProviders);
         state.pool = normalizePool([]);
@@ -1210,6 +1377,7 @@
           document.getElementById('providerTabProviders').hidden = tabName !== 'providers';
           document.getElementById('providerTabInstruction').hidden = tabName !== 'instruction';
           document.getElementById('providerTabProfile').hidden = tabName !== 'profile';
+          document.getElementById('providerTabAdmin').hidden = tabName !== 'admin';
           document.querySelectorAll('.tab-button').forEach((tabButton) => {
             tabButton.classList.toggle('active', tabButton === button);
           });
@@ -1325,6 +1493,8 @@
         renderProviders();
         renderPool();
       });
+
+      updateRoleUi();
 
       document.getElementById('savePromptBtn').addEventListener('click', () => {
         savePrompt();
@@ -1471,77 +1641,75 @@
           : [];
       }
 
-      async function getAccountStatus() {
-        try {
-          const response = await fetch('/api/auth/status');
-          if (!response.ok) {
-            return { configured: false, username: null, setupRequired: true };
-          }
-          return await response.json().catch(() => ({ configured: false, username: null, setupRequired: true }));
-        } catch (_error) {
-          return { configured: false, username: null, setupRequired: true };
-        }
-      }
-
-      async function handleInitialSetup(username, password) {
-        const response = await fetch('/api/auth/setup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password })
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(result.error || 'Account setup failed.');
-        }
-        return result;
-      }
-
-      async function changeAccountPassword(currentPassword, newPassword) {
-        const response = await fetch('/api/auth/change-password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: currentUsername || 'admin', currentPassword, newPassword })
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(result.error || 'Password change failed.');
-        }
-        return result;
-      }
-
       document.getElementById('loginForm').addEventListener('submit', async (event) => {
         event.preventDefault();
         const username = document.getElementById('loginUsername').value.trim();
         const password = document.getElementById('loginPassword').value;
+        const adminLogin = document.getElementById('adminLoginCheckbox').checked;
         const loginMessage = document.getElementById('loginMessage');
 
         try {
-          const status = await getAccountStatus();
-          const needsSetup = !status.configured;
-          const endpoint = needsSetup ? '/api/auth/setup' : '/api/auth/login';
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            throw new Error(result.error || (needsSetup ? 'Account setup failed.' : 'Sign in failed.'));
+          if (adminLogin) {
+            const response = await fetch('/api/admin/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username, password })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(result.error || 'Admin sign in failed.');
+            }
+
+            currentUsername = result.username || username;
+            currentRole = 'admin';
+            updateRoleUi();
+            document.getElementById('profileStatus').textContent = `Signed in as ${currentUsername}`;
+            document.getElementById('loginPanel').hidden = true;
+            document.getElementById('workspace').hidden = false;
+            document.getElementById('loginForm').reset();
+            initialize();
+            loginMessage.textContent = 'Admin signed in.';
+            return;
           }
 
-          await unlockVault(password);
-          currentUsername = result.username || username;
+          const localAccount = await loadLocalAccount();
+          if (!localAccount) {
+            clearLocalAppData();
+            const created = await createLocalAccount(username, password);
+            await unlockVault(password);
+            currentUsername = created.username;
+            currentRole = 'local';
+            updateRoleUi();
+            hydrateState();
+            document.getElementById('loginPanel').hidden = true;
+            document.getElementById('workspace').hidden = false;
+            document.getElementById('profileStatus').textContent = `Signed in as ${currentUsername}`;
+            document.getElementById('loginForm').reset();
+            initialize();
+            loginMessage.textContent = 'Local account created and ready.';
+            return;
+          }
+
+          const verified = await verifyLocalAccount(username, password);
+          if (!verified) {
+            throw new Error('Local account not found or password is incorrect.');
+          }
+
+          await unlockVault(password, true);
+          currentUsername = verified.username;
+          currentRole = 'local';
+          updateRoleUi();
           hydrateState();
           document.getElementById('loginPanel').hidden = true;
           document.getElementById('workspace').hidden = false;
           document.getElementById('profileStatus').textContent = `Signed in as ${currentUsername}`;
           document.getElementById('loginForm').reset();
           initialize();
-          loginMessage.textContent = needsSetup ? 'Local account setup complete.' : 'Signed in.';
+          loginMessage.textContent = 'Local user signed in.';
         } catch (error) {
           vaultKey = null;
-          if (error.message && error.message.includes('decrypt')) {
-            loginMessage.textContent = 'Password does not match the saved encrypted app data. Use the profile tab to update the account password or reset the vault to start fresh.';
+          if (isVaultAccessError(error)) {
+            loginMessage.textContent = 'Password does not match the saved encrypted app data. Use the profile tab to update the local password or reset the vault to start fresh.';
             return;
           }
           loginMessage.textContent = error.message || 'Unable to unlock encrypted app data.';
@@ -1564,21 +1732,56 @@
         }
 
         try {
-          const result = await changeAccountPassword(currentPassword, newPassword);
+          const updated = await changeLocalPassword(currentPassword, newPassword);
           const nextKey = await deriveVaultKey(newPassword);
           const iv = crypto.getRandomValues(new Uint8Array(12));
           const payload = new TextEncoder().encode(JSON.stringify(vaultData));
           const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, nextKey, payload);
           localStorage.setItem(VAULT_KEY, JSON.stringify({ iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(encrypted)) }));
           vaultKey = nextKey;
-          currentUsername = result.username || currentUsername;
+          currentUsername = updated.username || currentUsername;
           document.getElementById('profileStatus').textContent = `Signed in as ${currentUsername}`;
           document.getElementById('currentPasswordInput').value = '';
           document.getElementById('newPasswordInput').value = '';
           document.getElementById('confirmPasswordInput').value = '';
-          showSystemMessage(`Password updated for ${currentUsername}. Local encrypted data has been re-keyed successfully.`, 'success');
+          showSystemMessage(`Local password updated for ${currentUsername}. Local encrypted data has been re-keyed successfully.`, 'success');
         } catch (error) {
           showSystemMessage(`Password update failed: ${error.message}.`, 'error');
+        }
+      });
+
+      document.getElementById('adminChangePasswordBtn').addEventListener('click', async () => {
+        const currentPassword = document.getElementById('adminCurrentPasswordInput').value;
+        const newPassword = document.getElementById('adminNewPasswordInput').value;
+        const confirmPassword = document.getElementById('adminConfirmPasswordInput').value;
+
+        if (!currentPassword || !newPassword || !confirmPassword) {
+          showSystemMessage('Enter the current admin password and the new password twice before updating the admin account.', 'error');
+          return;
+        }
+
+        if (newPassword !== confirmPassword) {
+          showSystemMessage('The new admin password and confirmation do not match.', 'error');
+          return;
+        }
+
+        try {
+          const response = await fetch('/api/admin/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: currentUsername || 'admin', currentPassword, newPassword })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.error || 'Admin password change failed.');
+          }
+
+          document.getElementById('adminCurrentPasswordInput').value = '';
+          document.getElementById('adminNewPasswordInput').value = '';
+          document.getElementById('adminConfirmPasswordInput').value = '';
+          showSystemMessage(`Admin password updated for ${result.username || currentUsername}.`, 'success');
+        } catch (error) {
+          showSystemMessage(`Admin password update failed: ${error.message}.`, 'error');
         }
       });
 
@@ -1591,9 +1794,14 @@
         vaultKey = null;
         vaultData = {};
         currentUsername = '';
+        currentRole = 'local';
+        updateRoleUi();
         document.getElementById('workspace').hidden = true;
         document.getElementById('loginPanel').hidden = false;
         document.getElementById('profileStatus').textContent = 'Signed out';
+        document.getElementById('loginUsername').value = '';
+        document.getElementById('loginPassword').value = '';
+        document.getElementById('adminLoginCheckbox').checked = false;
         showSystemMessage('Signed out.', 'info');
       });
     </script>

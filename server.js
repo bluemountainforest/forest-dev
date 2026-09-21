@@ -79,15 +79,6 @@ function writeConfiguredAccount(username, password) {
   process.env.FOREST_ADMIN_PASSWORD = password;
 }
 
-function accountStatusPayload() {
-  const { username, password } = getConfiguredAccount();
-  return {
-    configured: Boolean(username && password),
-    username: username || null,
-    setupRequired: !username || !password
-  };
-}
-
 app.disable('x-powered-by');
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -96,47 +87,28 @@ app.get('/health', (_request, response) => {
   response.json({ status: 'ok' });
 });
 
-app.get('/api/auth/status', (_request, response) => {
-  response.json(accountStatusPayload());
+app.get('/admin', (_request, response) => {
+  response.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.post('/api/auth/setup', (request, response) => {
-  const { username, password } = request.body || {};
-  const trimmedUsername = typeof username === 'string' ? username.trim() : '';
-  const trimmedPassword = typeof password === 'string' ? password.trim() : '';
-
-  if (!trimmedUsername || !trimmedPassword) {
-    response.status(400).json({ error: 'Username and password are required to finish setup.' });
-    return;
-  }
-
-  if (getConfiguredAccount().configured) {
-    response.status(409).json({ error: 'Account credentials are already configured. Use sign in or change password instead.' });
-    return;
-  }
-
-  writeConfiguredAccount(trimmedUsername, trimmedPassword);
-  response.json({ username: trimmedUsername, configured: true });
-});
-
-app.post('/api/auth/login', (request, response) => {
+app.post('/api/admin/login', (request, response) => {
   const { username, password } = request.body || {};
   const { username: configuredUsername, password: configuredPassword } = getConfiguredAccount();
 
   if (!configuredUsername || !configuredPassword) {
-    response.status(503).json({ error: 'Account credentials are not configured on the server. Finish setup first.' });
+    response.status(503).json({ error: 'Admin credentials are not configured on the server. Finish setup first.' });
     return;
   }
 
   if (username !== configuredUsername || password !== configuredPassword) {
-    response.status(401).json({ error: 'Invalid credentials.' });
+    response.status(401).json({ error: 'Invalid admin credentials.' });
     return;
   }
 
-  response.json({ username: configuredUsername });
+  response.json({ username: configuredUsername, mode: 'admin' });
 });
 
-app.post('/api/auth/change-password', (request, response) => {
+app.post('/api/admin/change-password', (request, response) => {
   const { username, currentPassword, newPassword } = request.body || {};
   const { username: configuredUsername, password: configuredPassword } = getConfiguredAccount();
   const trimmedUsername = typeof username === 'string' ? username.trim() : '';
@@ -144,7 +116,7 @@ app.post('/api/auth/change-password', (request, response) => {
   const trimmedNew = typeof newPassword === 'string' ? newPassword : '';
 
   if (!configuredUsername || !configuredPassword) {
-    response.status(503).json({ error: 'Account credentials are not configured on the server.' });
+    response.status(503).json({ error: 'Admin credentials are not configured on the server.' });
     return;
   }
 
@@ -154,7 +126,7 @@ app.post('/api/auth/change-password', (request, response) => {
   }
 
   if (trimmedUsername !== configuredUsername || trimmedCurrent !== configuredPassword) {
-    response.status(401).json({ error: 'Current account password is incorrect.' });
+    response.status(401).json({ error: 'Current admin password is incorrect.' });
     return;
   }
 
@@ -164,7 +136,7 @@ app.post('/api/auth/change-password', (request, response) => {
   }
 
   writeConfiguredAccount(trimmedUsername, trimmedNew);
-  response.json({ username: trimmedUsername, configured: true });
+  response.json({ username: trimmedUsername, configured: true, mode: 'admin' });
 });
 
 app.post('/api/providers/zai/chat/completions', async (request, response) => {
