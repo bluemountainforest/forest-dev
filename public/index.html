@@ -1,0 +1,1397 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Forest</title>
+  </head>
+  <body>
+    <div id="systemMessageBar" aria-live="polite">Ready.</div>
+
+    <section id="loginPanel">
+      <h2>Sign in</h2>
+      <form id="loginForm">
+        <label>Username <input id="loginUsername" autocomplete="username" required></label>
+        <label>Password <input id="loginPassword" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="loginMessage" aria-live="polite"></p>
+    </section>
+
+    <main id="workspace" hidden>
+      <section>
+    
+        <div>
+          <button type="button" data-tab="chat" class="tab-button active">chat</button>
+          <button type="button" data-tab="providers" class="tab-button">providers</button>
+          <button type="button" data-tab="instruction" class="tab-button">instruction</button>
+          <button type="button" data-tab="profile" class="tab-button">profile</button>
+        </div>
+
+        <div id="providerTabChat">
+          <table>
+            <tr>
+              <td>
+                <h3>Chat session</h3>
+                <table>
+                  <tr>
+                    <th>Selected agent</th>
+                    <td><select id="agentSelect"></select></td>
+                  </tr>
+                  <tr>
+                    <th>Current session title</th>
+                    <td colspan="2">
+                      <input id="sessionTitle" type="text" value="Local project session">
+                      <span id="sessionTitleActions" hidden>
+                        <button type="button" id="updateTitleBtn">update title</button>
+                        <button type="button" id="newSessionTitleBtn">new session title</button>
+                      </span>
+                    </td>
+                  </tr>
+                </table>
+                <div id="chatMessages" aria-live="polite"></div>
+                <table>
+                  <tr>
+                    <th>Message</th>
+                    <td><textarea id="chatInput" rows="4" placeholder="Type a message for the selected agent..."></textarea></td>
+                    <td><button type="button" id="sendBtn">Send</button></td>
+                  </tr>
+                </table>
+              </td>
+              <td>
+                <h3>Chat sessions</h3>
+                <table>
+                  <thead><tr><th>Session</th><th>Created</th><th>Action</th></tr></thead>
+                  <tbody id="sessionListBody"></tbody>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </div>
+
+        <div id="providerTabProviders" hidden>
+          <h3>Agent providers</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Base URL</th>
+                <th>API Key</th>
+                <th>Model</th>
+                <th>Free models</th>
+                <th>Status</th>
+                <th>Pool</th>
+                <th>Manager</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="providerTableBody"></tbody>
+          </table>
+
+          <p>
+            <button type="button" id="addProviderBtn">Add provider</button>
+          </p>
+        </div>
+
+        <div id="providerTabInstruction" hidden>
+          <h3>App functions</h3>
+          <p>System prompt used for agents in the chat.</p>
+          <textarea id="systemPromptInput" rows="6"></textarea>
+          <p>
+            <button type="button" id="savePromptBtn">Save prompt</button>
+          </p>
+        </div>
+
+        <div id="providerTabProfile" hidden>
+          <h3>Profile</h3>
+          <p id="profileStatus">Signed out</p>
+          <button type="button" id="signOutBtn">Sign out</button>
+          <h3>Backup</h3>
+          <p>Download or restore each encrypted data category separately.</p>
+          <table>
+            <thead><tr><th>Data</th><th>Download</th><th>Restore</th></tr></thead>
+            <tbody>
+              <tr><td>Provider data</td><td><button type="button" data-backup="providers">download</button></td><td><button type="button" data-restore="providers">upload</button></td></tr>
+              <tr><td>Pool settings</td><td><button type="button" data-backup="pool">download</button></td><td><button type="button" data-restore="pool">upload</button></td></tr>
+              <tr><td>Instruction data</td><td><button type="button" data-backup="instruction">download</button></td><td><button type="button" data-restore="instruction">upload</button></td></tr>
+              <tr><td>Profile data</td><td><button type="button" data-backup="profile">download</button></td><td><button type="button" data-restore="profile">upload</button></td></tr>
+              <tr><td>Chat session data</td><td><button type="button" data-backup="sessions">download</button></td><td><button type="button" data-restore="sessions">upload</button></td></tr>
+            </tbody>
+          </table>
+          <input id="restoreFileInput" type="file" accept="application/json" hidden>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const PROVIDERS_KEY = 'forest-agent-providers';
+      const SESSION_KEY = 'forest-chat-session';
+      const SESSIONS_KEY = 'forest-chat-sessions';
+      const AGENT_POOL_KEY = 'forest-agent-pool';
+      const PROMPT_KEY = 'forest-agent-system-prompt';
+      const VAULT_KEY = 'forest-encrypted-vault';
+      let vaultKey = null;
+      let vaultData = {};
+      let vaultWrite = Promise.resolve();
+      let currentUsername = '';
+
+      const defaultSystemPrompt = 'You are a helpful local agent. Reply in short messages in the chat and keep responses concise. Do not overthink or use unnecessary tokens unless the user asks for more detail. End each response with: {provider name} | {model name} | {amount of tokens used} | {depth of your level of thinking}';
+      const legacySystemPrompt = 'You are a helpful local agent. Reply in short messages in the chat and keep responses concise. Do not overthink or use unnecessary tokens unless the user asks for more detail.';
+
+      const defaultProviders = [
+        {
+          id: 'groq',
+          providerType: 'groq',
+          name: 'Groq',
+          baseUrl: 'https://api.groq.com/openai/v1',
+          apiKey: '',
+          model: 'llama-3.1-70b-versatile',
+          models: ['llama-3.1-70b-versatile', 'llama-3.1-8b-instant'],
+          freeModels: [],
+          modelVerified: false,
+          status: 'unverified',
+          inPool: true,
+          isManager: true
+        },
+        {
+          id: 'openrouter',
+          providerType: 'openrouter',
+          name: 'OpenRouter',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          apiKey: '',
+          model: 'openai/gpt-4o-mini',
+          models: ['openai/gpt-4o-mini', 'anthropic/claude-3.5-sonnet', 'meta-llama/llama-3.1-70b-instruct'],
+          freeModels: [],
+          modelVerified: false,
+          status: 'unverified',
+          inPool: true,
+          isManager: false
+        },
+        {
+          id: 'zai',
+          providerType: 'zai',
+          name: 'Z.AI',
+          baseUrl: 'https://api.z.ai/api/paas/v4',
+          apiKey: '',
+          model: '',
+          models: ['glm-4.7-flash', 'glm-4.5-flash', 'glm-4.6v-flash'],
+          freeModels: ['glm-4.7-flash', 'glm-4.5-flash', 'glm-4.6v-flash'],
+          modelVerified: false,
+          status: 'unverified',
+          inPool: false,
+          isManager: false
+        }
+      ];
+
+      function bytesToBase64(bytes) {
+        let binary = '';
+        bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+        return btoa(binary);
+      }
+
+      function base64ToBytes(value) {
+        return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+      }
+
+      async function deriveVaultKey(password) {
+        const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+        return crypto.subtle.deriveKey(
+          { name: 'PBKDF2', salt: new TextEncoder().encode('forest-ai-local-vault-v1'), iterations: 120000, hash: 'SHA-256' },
+          material,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+      }
+
+      async function persistVault() {
+        if (!vaultKey) {
+          return;
+        }
+
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const encoded = new TextEncoder().encode(JSON.stringify(vaultData));
+        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, vaultKey, encoded);
+        localStorage.setItem(VAULT_KEY, JSON.stringify({ iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(encrypted)) }));
+      }
+
+      function queueVaultWrite() {
+        vaultWrite = vaultWrite.then(() => persistVault()).catch(() => undefined);
+        return vaultWrite;
+      }
+
+      function loadJSON(key, fallback) {
+        return Object.prototype.hasOwnProperty.call(vaultData, key) ? vaultData[key] : fallback;
+      }
+
+      function saveJSON(key, value) {
+        vaultData[key] = value;
+        queueVaultWrite();
+      }
+
+      async function unlockVault(password) {
+        vaultKey = await deriveVaultKey(password);
+        const encryptedValue = localStorage.getItem(VAULT_KEY);
+
+        if (encryptedValue) {
+          const stored = JSON.parse(encryptedValue);
+          const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: base64ToBytes(stored.iv) },
+            vaultKey,
+            base64ToBytes(stored.data)
+          );
+          vaultData = JSON.parse(new TextDecoder().decode(decrypted));
+        } else {
+          vaultData = {
+            [PROVIDERS_KEY]: JSON.parse(localStorage.getItem(PROVIDERS_KEY) || 'null') || defaultProviders,
+            [AGENT_POOL_KEY]: JSON.parse(localStorage.getItem(AGENT_POOL_KEY) || 'null') || [],
+            [PROMPT_KEY]: localStorage.getItem(PROMPT_KEY) || defaultSystemPrompt,
+            [SESSION_KEY]: JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'),
+            [SESSIONS_KEY]: []
+          };
+          [PROVIDERS_KEY, AGENT_POOL_KEY, PROMPT_KEY, SESSION_KEY].forEach((key) => localStorage.removeItem(key));
+          await persistVault();
+        }
+      }
+
+      function normalizeProviders(list) {
+        const allowedIds = new Set(defaultProviders.map((provider) => provider.id));
+        const saved = Array.isArray(list) ? list : [];
+        const filtered = saved.filter((provider) => provider && typeof provider.id === 'string');
+
+        if (filtered.length === 0) {
+          return defaultProviders.map((provider) => ({ ...provider }));
+        }
+
+        const normalizedDefaults = defaultProviders.map((template) => {
+          const savedProvider = filtered.find((provider) => provider.id === template.id) || {};
+          const inPool = Boolean(savedProvider.inPool ?? template.inPool ?? false);
+          const isManager = Boolean(savedProvider.isManager ?? template.isManager ?? false);
+
+          return {
+            ...template,
+            ...savedProvider,
+            id: template.id,
+            providerType: savedProvider.providerType || template.providerType || template.id,
+            name: savedProvider.name || template.name,
+            baseUrl: savedProvider.baseUrl || template.baseUrl,
+            apiKey: savedProvider.apiKey || '',
+            model: savedProvider.model || template.model,
+            models: Array.isArray(savedProvider.models) && savedProvider.models.length ? savedProvider.models : template.models,
+            freeModels: Array.isArray(savedProvider.freeModels) ? savedProvider.freeModels : [],
+            modelVerified: Boolean(savedProvider.modelVerified && savedProvider.model),
+            status: savedProvider.status || template.status,
+            inPool,
+            isManager
+          };
+        });
+
+        const customProviders = filtered
+          .filter((provider) => !allowedIds.has(provider.id))
+          .map((provider) => ({
+            ...provider,
+            providerType: provider.providerType || 'custom',
+            name: provider.name || 'Custom provider',
+            baseUrl: provider.baseUrl || '',
+            apiKey: provider.apiKey || '',
+            model: provider.model || '',
+            models: Array.isArray(provider.models) ? provider.models : [],
+            freeModels: Array.isArray(provider.freeModels) ? provider.freeModels : [],
+            modelVerified: Boolean(provider.modelVerified),
+            status: provider.status || 'unverified',
+            inPool: Boolean(provider.inPool),
+            isManager: Boolean(provider.isManager)
+          }));
+
+        return [...normalizedDefaults, ...customProviders];
+      }
+
+      function normalizePool(list) {
+        const saved = Array.isArray(list) ? list : [];
+        const validProviderIds = new Set(defaultProviders.map((provider) => provider.id));
+
+        return saved.filter((agent) => agent && typeof agent.providerId === 'string' && validProviderIds.has(agent.providerId))
+          .map((agent) => ({
+            ...agent,
+            id: agent.id || `${agent.providerId}-${agent.model || 'agent'}`,
+            provider: agent.provider || defaultProviders.find((provider) => provider.id === agent.providerId)?.name || 'Provider',
+            model: agent.model || defaultProviders.find((provider) => provider.id === agent.providerId)?.model || 'default-model',
+            role: agent.role || 'assistant',
+            status: agent.status || 'unverified',
+            isManager: Boolean(agent.isManager)
+          }));
+      }
+
+      const state = {
+        providers: normalizeProviders(loadJSON(PROVIDERS_KEY, defaultProviders)),
+        pool: normalizePool(loadJSON(AGENT_POOL_KEY, [])),
+        systemPrompt: (function () {
+          const saved = loadJSON(PROMPT_KEY, defaultSystemPrompt);
+          return typeof saved === 'string' && saved.trim() ? saved : defaultSystemPrompt;
+        })(),
+        selectedAgentId: '',
+        session: loadJSON(SESSION_KEY, {
+          title: 'Local project session',
+          messages: [],
+          agentId: ''
+        }),
+        sessions: loadJSON(SESSIONS_KEY, [])
+      };
+
+      if (JSON.stringify(state.providers) !== JSON.stringify(loadJSON(PROVIDERS_KEY, defaultProviders))) {
+        saveJSON(PROVIDERS_KEY, state.providers);
+      }
+
+      if (JSON.stringify(state.pool) !== JSON.stringify(loadJSON(AGENT_POOL_KEY, []))) {
+        saveJSON(AGENT_POOL_KEY, state.pool);
+      }
+
+      if ((state.systemPrompt || '').trim() !== (loadJSON(PROMPT_KEY, defaultSystemPrompt) || '').trim()) {
+        saveJSON(PROMPT_KEY, state.systemPrompt || defaultSystemPrompt);
+      }
+
+      function showSystemMessage(text, type = 'info') {
+        const bar = document.getElementById('systemMessageBar');
+        if (!bar) {
+          return;
+        }
+
+        bar.textContent = text;
+        bar.dataset.type = type;
+      }
+
+      function getActivePoolManager() {
+        return state.pool.find((agent) => agent.isManager) || state.pool[0] || null;
+      }
+
+      function resolveSelectedAgentId() {
+        const activeManager = getActivePoolManager();
+        const selectedFromPool = state.pool.find((agent) => agent.id === state.selectedAgentId) || null;
+
+        if (selectedFromPool) {
+          return selectedFromPool.id;
+        }
+
+        if (activeManager) {
+          state.selectedAgentId = activeManager.id;
+          return activeManager.id;
+        }
+
+        state.selectedAgentId = '';
+        return '';
+      }
+
+      function syncPoolFromProviders() {
+        const activePool = state.providers
+          .filter((provider) => provider.inPool && provider.modelVerified && provider.status === 'ready')
+          .map((provider) => ({
+            id: `${provider.id}-${provider.model}`,
+            providerId: provider.id,
+            name: `${provider.name} agent`,
+            provider: provider.name,
+            model: provider.model,
+            role: 'assistant',
+            status: provider.status || 'unverified',
+            isManager: Boolean(provider.isManager)
+          }));
+
+        state.pool = activePool;
+
+        if (state.pool.length > 0 && !state.pool.some((agent) => agent.isManager)) {
+          const fallbackProvider = state.providers.find((provider) => provider.inPool) || state.providers[0];
+          if (fallbackProvider) {
+            fallbackProvider.isManager = true;
+            state.pool = state.pool.map((agent) => ({
+              ...agent,
+              isManager: agent.providerId === fallbackProvider.id
+            }));
+          }
+        }
+
+        resolveSelectedAgentId();
+        saveJSON(AGENT_POOL_KEY, state.pool);
+      }
+
+      function renderProviders() {
+        const tableBody = document.getElementById('providerTableBody');
+        tableBody.innerHTML = state.providers.map((provider) => {
+          const optionList = provider.freeModels
+            .map((model) => `<option value="${model}" ${provider.model === model ? 'selected' : ''}>${model}</option>`)
+            .join('');
+          const providerOptions = defaultProviders
+            .map((item) => `<option value="${item.id}" ${provider.providerType === item.id ? 'selected' : ''}>${item.name}</option>`)
+            .join('') + (provider.providerType && !defaultProviders.some((item) => item.id === provider.providerType)
+              ? `<option value="${escapeHtml(provider.providerType)}" selected>${escapeHtml(provider.providerType === 'custom' ? 'Custom provider' : provider.name)}</option>`
+              : '');
+
+          return `
+            <tr>
+              <td>
+                <select data-field="providerType" data-provider-id="${provider.id}">
+                  ${providerOptions}
+                </select>
+              </td>
+              <td><input data-field="baseUrl" data-provider-id="${provider.id}" type="text" value="${escapeHtml(provider.baseUrl)}"></td>
+              <td><input data-field="apiKey" data-provider-id="${provider.id}" type="password" value="${escapeHtml(provider.apiKey)}" placeholder="api key"></td>
+              <td>
+                <select data-field="model" data-provider-id="${provider.id}" ${provider.freeModels.length ? '' : 'disabled'}>
+                  ${optionList || '<option value="">Load free models first</option>'}
+                </select>
+              </td>
+              <td>
+                <button type="button" data-action="load-free-models" data-provider-id="${provider.id}">Load free models</button>
+                <span>${provider.freeModels.length} loaded</span>
+              </td>
+              <td><span data-status="${provider.id}">${provider.status}</span></td>
+              <td>
+                <label>
+                  <input type="checkbox" data-field="inPool" data-provider-id="${provider.id}" ${provider.inPool ? 'checked' : ''}> pool
+                </label>
+              </td>
+              <td>
+                <label>
+                  <input type="radio" name="managerRadio" data-field="isManager" data-provider-id="${provider.id}" ${provider.isManager ? 'checked' : ''}> manager
+                </label>
+              </td>
+              <td>
+                <button type="button" data-action="test-status" data-provider-id="${provider.id}">Test status</button>
+                ${defaultProviders.some((item) => item.id === provider.id) ? '' : `<button type="button" data-action="duplicate-provider" data-provider-id="${provider.id}">++</button><button type="button" data-action="remove-provider" data-provider-id="${provider.id}">X</button>`}
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      function renderPoolSelection() {
+        return;
+      }
+
+      function renderPool() {
+        const agentSelect = document.getElementById('agentSelect');
+
+        if (agentSelect) {
+          if (state.pool.length === 0) {
+            agentSelect.innerHTML = '<option value="">No agents available</option>';
+          } else {
+            agentSelect.innerHTML = state.pool.map((agent) => `
+              <option value="${agent.id}" ${agent.id === state.selectedAgentId ? 'selected' : ''}>${escapeHtml(agent.model)} - ${escapeHtml(agent.provider)}</option>
+            `).join('');
+          }
+        }
+
+        resolveSelectedAgentId();
+      }
+
+      function ensureSessionInstruction() {
+        const prompt = (state.systemPrompt || '').trim();
+        if (!prompt) {
+          return;
+        }
+
+        const hasInstruction = state.session.messages.some((message) => message.role === 'system' && message.kind === 'instruction');
+        if (!hasInstruction) {
+          state.session.messages.unshift({ role: 'system', kind: 'instruction', text: prompt, createdAt: new Date().toISOString() });
+        }
+      }
+
+      function messageTime(message) {
+        return message.createdAt || message.timestamp || new Date().toISOString();
+      }
+
+      function relativeTime(value) {
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+        if (elapsedSeconds < 60) {
+          return `${elapsedSeconds}s ago`;
+        }
+        const minutes = Math.floor(elapsedSeconds / 60);
+        if (minutes < 60) {
+          return `${minutes}m ago`;
+        }
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) {
+          return `${hours}h ago`;
+        }
+        return `${Math.floor(hours / 24)}d ago`;
+      }
+
+      function renderSessionHeader() {
+        const sessionStart = state.session.createdAt || new Date().toISOString();
+        const sessionUpdated = state.session.updatedAt || sessionStart;
+        return `<p><strong>Session:</strong> ${escapeHtml(sessionLabel(state.session))} | started ${escapeHtml(new Date(sessionStart).toLocaleString())} | updated ${escapeHtml(new Date(sessionUpdated).toLocaleString())}</p>`;
+      }
+
+      async function requestAgentReply(agent) {
+        const provider = state.providers.find((item) => item.id === agent.providerId);
+        if (!provider || !provider.apiKey) {
+          throw new Error(`${agent.name} has no API key configured`);
+        }
+
+        const endpoint = provider.providerType === 'zai'
+          ? '/api/providers/zai/chat/completions'
+          : `${provider.baseUrl.replace(/\/$/, '')}/chat/completions`;
+        const headers = {
+          'Content-Type': 'application/json'
+        };
+        if (provider.providerType !== 'zai') {
+          headers.Authorization = `Bearer ${provider.apiKey}`;
+        }
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            ...(provider.providerType === 'zai' ? { apiKey: provider.apiKey } : {}),
+            model: provider.model,
+            messages: state.session.messages
+              .filter((message) => ['system', 'user', 'assistant'].includes(message.role))
+              .map((message) => ({ role: message.role, content: message.text })),
+            temperature: 0.2
+          })
+        });
+
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(result.error?.message || `provider returned ${response.status}`);
+        }
+
+        const reply = result.choices?.[0]?.message?.content;
+        if (!reply) {
+          throw new Error('provider returned no message content');
+        }
+
+        return {
+          text: `${reply.trim()}\n${responseMetadata(provider, result.usage)}`,
+          usage: result.usage || {}
+        };
+      }
+
+      function renderMessages() {
+        const chats = document.getElementById('chatMessages');
+        chats.innerHTML = renderSessionHeader() + state.session.messages
+          .filter((message) => !(message.role === 'system' && message.kind === 'instruction'))
+          .map((message) => {
+          const label = message.role === 'user'
+            ? 'User'
+            : message.role === 'assistant'
+              ? 'Agent'
+              : message.kind === 'resume'
+                ? 'Session'
+                : 'System';
+          const createdAt = messageTime(message);
+          return `<p><strong>${label}:</strong> ${escapeHtml(message.text)} <small>(${escapeHtml(relativeTime(createdAt))})</small></p>`;
+        }).join('');
+        chats.scrollTop = chats.scrollHeight;
+      }
+
+      function sessionLabel(session) {
+        return session.title || 'Untitled session';
+      }
+
+      function renderSessionList() {
+        const list = document.getElementById('sessionListBody');
+        if (!list) {
+          return;
+        }
+
+        if (!state.sessions.length) {
+          list.innerHTML = '<tr><td colspan="3">No saved sessions.</td></tr>';
+          return;
+        }
+
+        const orderedSessions = [...state.sessions].sort((left, right) => {
+          if (left.id === state.session.id) {
+            return -1;
+          }
+          if (right.id === state.session.id) {
+            return 1;
+          }
+          return new Date(right.createdAt || 0) - new Date(left.createdAt || 0);
+        });
+
+        list.innerHTML = orderedSessions.map((session) => `
+          <tr>
+            <td>${escapeHtml(sessionLabel(session))}${session.id === state.session.id ? ' (active)' : ''}</td>
+            <td>${escapeHtml(new Date(session.createdAt).toLocaleString())}</td>
+            <td>
+              <button type="button" data-session-action="load" data-session-id="${session.id}">load</button>
+              <button type="button" data-session-action="delete" data-session-id="${session.id}">delete</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function persistCurrentSession(titleOverride) {
+        state.session.agentId = state.selectedAgentId;
+        state.session.title = titleOverride || document.getElementById('sessionTitle').value || 'Local project session';
+        state.session.updatedAt = state.session.updatedAt || new Date().toISOString();
+        const existingIndex = state.sessions.findIndex((session) => session.id === state.session.id);
+        if (existingIndex >= 0) {
+          state.sessions[existingIndex] = { ...state.session };
+        } else {
+          state.sessions.unshift({ ...state.session });
+        }
+        saveJSON(SESSION_KEY, state.session);
+        saveJSON(SESSIONS_KEY, state.sessions);
+        renderSessionList();
+      }
+
+      function createSessionWithTitle(title) {
+        persistCurrentSession(state.session.title);
+        state.session = {
+          id: crypto.randomUUID(),
+          title,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          agentId: state.selectedAgentId,
+          messages: [{ role: 'system', kind: 'instruction', text: state.systemPrompt || defaultSystemPrompt }]
+        };
+        state.sessions.unshift({ ...state.session });
+        document.getElementById('sessionTitle').value = state.session.title;
+        saveJSON(SESSION_KEY, state.session);
+        saveJSON(SESSIONS_KEY, state.sessions);
+        renderMessages();
+        renderSessionList();
+        showSystemMessage('New chat session created.', 'success');
+      }
+
+      function updateCurrentSessionTitle() {
+        const titleInput = document.getElementById('sessionTitle');
+        const title = titleInput.value.trim();
+        if (!title) {
+          showSystemMessage('Enter a session title before updating it.', 'error');
+          return;
+        }
+
+        state.session.title = title;
+        state.session.updatedAt = new Date().toISOString();
+        saveJSON(SESSION_KEY, state.session);
+        saveJSON(SESSIONS_KEY, state.sessions.map((session) => session.id === state.session.id ? { ...state.session } : session));
+        state.sessions = state.sessions.map((session) => session.id === state.session.id ? { ...state.session } : session);
+        renderSessionList();
+        titleInput.value = state.session.title;
+        document.getElementById('sessionTitleActions').hidden = true;
+        showSystemMessage(`Current session renamed to: ${title}.`, 'success');
+      }
+
+      function startSessionWithTitle() {
+        const title = document.getElementById('sessionTitle').value.trim();
+        if (!title) {
+          showSystemMessage('Enter a title for the new session.', 'error');
+          return;
+        }
+
+        createSessionWithTitle(title);
+        document.getElementById('sessionTitleActions').hidden = true;
+      }
+
+      function loadSession(sessionId) {
+        const selectedSession = state.sessions.find((session) => session.id === sessionId);
+        if (!selectedSession) {
+          return;
+        }
+
+        persistCurrentSession();
+        state.session = { ...selectedSession, messages: [...selectedSession.messages] };
+        state.selectedAgentId = state.session.agentId || state.selectedAgentId;
+        state.session.messages.push({
+          role: 'system',
+          kind: 'resume',
+          text: `Session resumed at ${new Date().toLocaleString()}.`,
+          createdAt: new Date().toISOString()
+        });
+        state.session.updatedAt = new Date().toISOString();
+        document.getElementById('sessionTitle').value = state.session.title;
+        renderPool();
+        renderMessages();
+        persistCurrentSession(state.session.title);
+        renderSessionList();
+        showSystemMessage(`Loaded chat session: ${sessionLabel(state.session)}.`, 'success');
+      }
+
+      function deleteSession(sessionId) {
+        state.sessions = state.sessions.filter((session) => session.id !== sessionId);
+        if (state.session.id === sessionId) {
+          state.session = {
+            id: crypto.randomUUID(),
+            title: 'New local session',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            agentId: state.selectedAgentId,
+            messages: [{ role: 'system', kind: 'instruction', text: state.systemPrompt || defaultSystemPrompt }]
+          };
+          document.getElementById('sessionTitle').value = state.session.title;
+          saveJSON(SESSION_KEY, state.session);
+          renderMessages();
+        }
+        saveJSON(SESSIONS_KEY, state.sessions);
+        renderSessionList();
+        showSystemMessage('Chat session deleted.', 'info');
+      }
+
+      function ensurePoolEntry(providerId) {
+        const provider = state.providers.find((item) => item.id === providerId);
+        if (!provider) {
+          return;
+        }
+
+        const existing = state.pool.find((item) => item.providerId === providerId && item.model === provider.model);
+        if (existing) {
+          return;
+        }
+
+        const agent = {
+          id: `${provider.id}-${provider.model}`,
+          providerId: provider.id,
+          name: `${provider.name} agent`,
+          provider: provider.name,
+          model: provider.model,
+          role: 'assistant',
+          status: provider.status,
+          isManager: state.pool.length === 0
+        };
+
+        state.pool.push(agent);
+        if (!state.selectedAgentId) {
+          state.selectedAgentId = agent.id;
+        }
+        saveJSON(AGENT_POOL_KEY, state.pool);
+        renderPool();
+      }
+
+      function removePoolEntry(agentId) {
+        state.pool = state.pool.filter((agent) => agent.id !== agentId);
+
+        const managerRemoved = state.pool.every((agent) => !agent.isManager);
+        if (managerRemoved && state.pool.length > 0) {
+          state.pool[0].isManager = true;
+        }
+
+        const nextManager = state.pool.find((agent) => agent.isManager) || state.pool[0];
+        state.selectedAgentId = nextManager ? nextManager.id : '';
+        saveJSON(AGENT_POOL_KEY, state.pool);
+        renderPool();
+      }
+
+      function setManagerAgent(agentId) {
+        const nextManagedId = agentId || '';
+        state.pool = state.pool.map((agent) => ({
+          ...agent,
+          isManager: agent.id === nextManagedId
+        }));
+
+        if (nextManagedId) {
+          state.selectedAgentId = nextManagedId;
+        }
+        saveJSON(AGENT_POOL_KEY, state.pool);
+        renderPool();
+      }
+
+      function updateProviderField(providerId, field, value, checked) {
+        const provider = state.providers.find((item) => item.id === providerId);
+        if (!provider) {
+          return;
+        }
+
+        if (field === 'providerType') {
+          const template = defaultProviders.find((item) => item.id === value);
+          if (!template) {
+            return;
+          }
+          provider.providerType = template.id;
+          provider.name = template.name;
+          provider.baseUrl = template.baseUrl;
+          provider.model = '';
+          provider.models = [];
+          provider.freeModels = [];
+          provider.modelVerified = false;
+          provider.status = 'unverified';
+          showSystemMessage(`${provider.name} selected. Load its free models before adding it to chat.`, 'info');
+        } else if (field === 'model') {
+          if (!provider.freeModels.includes(value)) {
+            showSystemMessage('Only models from the loaded free-model catalog can be selected.', 'error');
+            return;
+          }
+          provider.model = value;
+          provider.modelVerified = false;
+          provider.status = 'unverified';
+          showSystemMessage(`${provider.name} model changed. Test status before using it in chat.`, 'info');
+        } else if (field === 'inPool') {
+          provider.inPool = Boolean(checked);
+          const poolMessage = provider.inPool && !provider.modelVerified
+            ? `${provider.name} selected for the pool, but it needs a successful model test before chat use.`
+            : `${provider.name} ${provider.inPool ? 'added to pool' : 'removed from pool'} for chat and local operations.`;
+          showSystemMessage(poolMessage, provider.inPool ? 'success' : 'info');
+        } else if (field === 'isManager') {
+          provider.isManager = Boolean(checked);
+          if (provider.isManager) {
+            state.providers.forEach((item) => {
+              if (item.id !== providerId) {
+                item.isManager = false;
+              }
+            });
+            showSystemMessage(`${provider.name} is now the app manager agent.`, 'success');
+          } else {
+            showSystemMessage(`${provider.name} is no longer the app manager agent.`, 'info');
+          }
+        } else {
+          provider[field] = value;
+        }
+
+        saveJSON(PROVIDERS_KEY, state.providers);
+        syncPoolFromProviders();
+        renderProviders();
+        renderPool();
+      }
+
+      function freeModelsForProvider(provider, payload) {
+        const models = Array.isArray(payload.data) ? payload.data : [];
+        if (provider.providerType === 'zai') {
+          return ['glm-4.7-flash', 'glm-4.5-flash', 'glm-4.6v-flash'];
+        }
+
+        if (provider.providerType === 'openrouter') {
+          return models
+            .filter((model) => model && model.id && model.pricing && Number(model.pricing.prompt) === 0 && Number(model.pricing.completion) === 0)
+            .map((model) => model.id)
+            .sort();
+        }
+
+        if (provider.providerType === 'groq') {
+          return models
+            .filter((model) => model && model.id && !model.id.includes('whisper') && !model.id.includes('guard'))
+            .map((model) => model.id)
+            .sort();
+        }
+
+        return [];
+      }
+
+      function providerModelCatalogEndpoint(provider) {
+        if (provider.providerType === 'zai') {
+          return '';
+        }
+        if (provider.providerType === 'openrouter') {
+          return 'https://openrouter.ai/api/v1/models';
+        }
+        if (provider.providerType === 'groq') {
+          return 'https://api.groq.com/openai/v1/models';
+        }
+        return '';
+      }
+
+      async function loadFreeModels(providerId) {
+        const provider = state.providers.find((item) => item.id === providerId);
+        if (!provider) {
+          return;
+        }
+        if (!provider.apiKey) {
+          showSystemMessage(`${provider.name} free-model list requires an API key.`, 'error');
+          return;
+        }
+
+        showSystemMessage(`Loading current free models from ${provider.name}...`, 'info');
+        try {
+          const catalogEndpoint = providerModelCatalogEndpoint(provider);
+          let payload = {};
+          if (catalogEndpoint) {
+            const response = await fetch(catalogEndpoint, {
+              headers: { 'Authorization': `Bearer ${provider.apiKey}` }
+            });
+            payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(payload.error?.message || `provider returned ${response.status}`);
+            }
+          }
+
+          provider.freeModels = freeModelsForProvider(provider, payload);
+          provider.models = provider.freeModels;
+          provider.model = provider.freeModels.includes(provider.model) ? provider.model : '';
+          provider.modelVerified = false;
+          provider.status = provider.freeModels.length ? 'models loaded' : 'no free models found';
+          saveJSON(PROVIDERS_KEY, state.providers);
+          syncPoolFromProviders();
+          renderProviders();
+          renderPool();
+          showSystemMessage(`${provider.name}: ${provider.freeModels.length} current free models loaded. Test the selected model before chat.`, provider.freeModels.length ? 'success' : 'error');
+        } catch (error) {
+          provider.status = 'model list error';
+          saveJSON(PROVIDERS_KEY, state.providers);
+          renderProviders();
+          showSystemMessage(`${provider.name} free-model list failed: ${error.message}.`, 'error');
+        }
+      }
+
+      function duplicateProvider(providerId) {
+        const source = state.providers.find((provider) => provider.id === providerId);
+        if (!source) {
+          return;
+        }
+        const copy = {
+          ...source,
+          id: `provider-${Date.now()}`,
+          name: `${source.name} copy`,
+          model: '',
+          models: [...source.models],
+          freeModels: [...source.freeModels],
+          modelVerified: false,
+          status: 'unverified',
+          inPool: false,
+          isManager: false
+        };
+        state.providers.push(copy);
+        saveJSON(PROVIDERS_KEY, state.providers);
+        renderProviders();
+        showSystemMessage(`${source.name} copied. Select a model for the new provider entry.`, 'success');
+      }
+
+      function removeProvider(providerId) {
+        if (defaultProviders.some((provider) => provider.id === providerId)) {
+          return;
+        }
+        const removed = state.providers.find((provider) => provider.id === providerId);
+        state.providers = state.providers.filter((provider) => provider.id !== providerId);
+        saveJSON(PROVIDERS_KEY, state.providers);
+        syncPoolFromProviders();
+        renderProviders();
+        renderPool();
+        showSystemMessage(`${removed?.name || 'Provider'} removed and pool updated.`, 'info');
+      }
+
+      async function testProviderStatus(providerId) {
+        const provider = state.providers.find((item) => item.id === providerId);
+        if (!provider) {
+          return;
+        }
+
+        if (!provider.apiKey || !provider.baseUrl || !provider.model || !provider.freeModels.includes(provider.model)) {
+          provider.status = 'missing credentials';
+          saveJSON(PROVIDERS_KEY, state.providers);
+          renderProviders();
+          showSystemMessage(`${provider.name} status check failed: load a free-model list, select a model, and provide an API key.`, 'error');
+          return;
+        }
+
+        const endpoint = provider.providerType === 'zai'
+          ? '/api/providers/zai/chat/completions'
+          : `${provider.baseUrl.replace(/\/$/, '')}/chat/completions`;
+        const requestHeaders = {
+          'Content-Type': 'application/json'
+        };
+        if (provider.providerType !== 'zai') {
+          requestHeaders.Authorization = `Bearer ${provider.apiKey}`;
+        }
+        const startedAt = Date.now();
+
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 15000);
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: requestHeaders,
+            body: JSON.stringify({
+              ...(provider.providerType === 'zai' ? { apiKey: provider.apiKey } : {}),
+              model: provider.model,
+              messages: [{ role: 'user', content: 'ping' }],
+              max_tokens: 8,
+              temperature: 0
+            }),
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+
+          const result = await response.json().catch(() => ({}));
+          const latencyMs = Date.now() - startedAt;
+          const usage = result.usage || {};
+          const content = result.choices && result.choices[0] && result.choices[0].message ? result.choices[0].message.content : '';
+          const reaction = content ? 'response received' : 'empty payload';
+          const tokens = usage.total_tokens || usage.completion_tokens || 0;
+
+          if (!response.ok) {
+            const errorText = result.error && result.error.message ? result.error.message : 'unknown provider error';
+            provider.status = 'error';
+            saveJSON(PROVIDERS_KEY, state.providers);
+            renderProviders();
+            showSystemMessage(`${provider.name} test failed (${response.status}): ${errorText}. Latency ${latencyMs}ms.`, 'error');
+            return;
+          }
+
+          provider.status = 'ready';
+          provider.modelVerified = true;
+          saveJSON(PROVIDERS_KEY, state.providers);
+          syncPoolFromProviders();
+          renderProviders();
+          renderPool();
+          showSystemMessage(`${provider.name} connection test passed. Response ${reaction}; latency ${latencyMs}ms; tokens ${tokens}; model ${provider.model}.`, 'success');
+        } catch (error) {
+          provider.status = 'network error';
+          saveJSON(PROVIDERS_KEY, state.providers);
+          renderProviders();
+          showSystemMessage(`${provider.name} status test failed to connect: ${error.message}.`, 'error');
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function responseMetadata(provider, usage) {
+        const tokens = usage?.total_tokens || usage?.completion_tokens || 0;
+        return `${provider.name} | ${provider.model} | ${tokens} tokens | concise`;
+      }
+
+      function backupValue(category) {
+        const values = {
+          providers: state.providers,
+          pool: state.pool,
+          instruction: { systemPrompt: state.systemPrompt },
+          profile: { username: currentUsername },
+          sessions: { current: state.session, sessions: state.sessions }
+        };
+        return values[category];
+      }
+
+      async function downloadBackup(category) {
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const payload = new TextEncoder().encode(JSON.stringify({ category, value: backupValue(category), createdAt: new Date().toISOString() }));
+        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, vaultKey, payload);
+        const blob = new Blob([JSON.stringify({ category, iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(encrypted)) })], { type: 'application/json' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `forest-${category}-backup.json`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+        showSystemMessage(`${category} backup downloaded as encrypted data.`, 'success');
+      }
+
+      async function restoreBackup(file, expectedCategory) {
+        const stored = JSON.parse(await file.text());
+        if (stored.category !== expectedCategory) {
+          throw new Error('backup category does not match this restore action');
+        }
+        const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(stored.iv) }, vaultKey, base64ToBytes(stored.data));
+        const backup = JSON.parse(new TextDecoder().decode(decrypted));
+        if (expectedCategory === 'providers') {
+          state.providers = normalizeProviders(backup.value);
+          saveJSON(PROVIDERS_KEY, state.providers);
+          syncPoolFromProviders();
+          renderProviders();
+          renderPool();
+        } else if (expectedCategory === 'pool') {
+          state.pool = normalizePool(backup.value);
+          saveJSON(AGENT_POOL_KEY, state.pool);
+          renderPool();
+        } else if (expectedCategory === 'instruction') {
+          state.systemPrompt = backup.value.systemPrompt || defaultSystemPrompt;
+          saveJSON(PROMPT_KEY, state.systemPrompt);
+          document.getElementById('systemPromptInput').value = state.systemPrompt;
+        } else if (expectedCategory === 'profile') {
+          showSystemMessage(`Profile backup for ${backup.value.username || currentUsername} verified.`, 'success');
+        } else if (expectedCategory === 'sessions') {
+          state.session = backup.value.current;
+          state.sessions = Array.isArray(backup.value.sessions) ? backup.value.sessions : [];
+          saveJSON(SESSION_KEY, state.session);
+          saveJSON(SESSIONS_KEY, state.sessions);
+          document.getElementById('sessionTitle').value = state.session.title || 'Local project session';
+          renderMessages();
+          renderSessionList();
+        }
+        showSystemMessage(`${expectedCategory} backup restored.`, 'success');
+      }
+
+      function savePrompt() {
+        const promptInput = document.getElementById('systemPromptInput');
+        state.systemPrompt = (promptInput.value || defaultSystemPrompt).trim();
+        saveJSON(PROMPT_KEY, state.systemPrompt);
+        ensureSessionInstruction();
+        renderMessages();
+      }
+
+      document.querySelectorAll('.tab-button').forEach((button) => {
+        button.addEventListener('click', () => {
+          const tabName = button.dataset.tab;
+          document.getElementById('providerTabChat').hidden = tabName !== 'chat';
+          document.getElementById('providerTabProviders').hidden = tabName !== 'providers';
+          document.getElementById('providerTabInstruction').hidden = tabName !== 'instruction';
+          document.getElementById('providerTabProfile').hidden = tabName !== 'profile';
+          document.querySelectorAll('.tab-button').forEach((tabButton) => {
+            tabButton.classList.toggle('active', tabButton === button);
+          });
+        });
+      });
+
+      document.getElementById('providerTableBody').addEventListener('input', (event) => {
+        const target = event.target;
+        if (!target.dataset.field) {
+          return;
+        }
+
+        const isChecked = target.type === 'checkbox' || target.type === 'radio' ? target.checked : undefined;
+        updateProviderField(target.dataset.providerId, target.dataset.field, target.value, isChecked);
+      });
+
+      document.getElementById('providerTableBody').addEventListener('change', (event) => {
+        const target = event.target;
+        if (!target.dataset.field) {
+          return;
+        }
+
+        const isChecked = target.type === 'checkbox' || target.type === 'radio' ? target.checked : undefined;
+        updateProviderField(target.dataset.providerId, target.dataset.field, target.value, isChecked);
+      });
+
+      document.getElementById('providerTableBody').addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) {
+          return;
+        }
+
+        const providerId = button.dataset.providerId;
+        const action = button.dataset.action;
+
+        if (action === 'test-status') {
+          testProviderStatus(providerId);
+        }
+
+        if (action === 'load-free-models') {
+          loadFreeModels(providerId);
+        }
+
+        if (action === 'duplicate-provider') {
+          duplicateProvider(providerId);
+        }
+
+        if (action === 'remove-provider') {
+          removeProvider(providerId);
+        }
+      });
+
+      let restoreCategory = '';
+      document.querySelectorAll('button[data-backup]').forEach((button) => {
+        button.addEventListener('click', () => downloadBackup(button.dataset.backup));
+      });
+      document.querySelectorAll('button[data-restore]').forEach((button) => {
+        button.addEventListener('click', () => {
+          restoreCategory = button.dataset.restore;
+          document.getElementById('restoreFileInput').click();
+        });
+      });
+      document.getElementById('restoreFileInput').addEventListener('change', async (event) => {
+        const file = event.target.files[0];
+        if (!file || !restoreCategory) {
+          return;
+        }
+        try {
+          await restoreBackup(file, restoreCategory);
+        } catch (error) {
+          showSystemMessage(`Backup restore failed: ${error.message}.`, 'error');
+        } finally {
+          event.target.value = '';
+          restoreCategory = '';
+        }
+      });
+
+      document.getElementById('sessionListBody').addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-session-action]');
+        if (!button) {
+          return;
+        }
+
+        if (button.dataset.sessionAction === 'load') {
+          loadSession(button.dataset.sessionId);
+        }
+        if (button.dataset.sessionAction === 'delete') {
+          deleteSession(button.dataset.sessionId);
+        }
+      });
+
+      document.getElementById('addProviderBtn').addEventListener('click', () => {
+        const nextIndex = state.providers.length + 1;
+        const id = `provider-${nextIndex}`;
+        const provider = {
+          id,
+          providerType: 'custom',
+          name: `Provider ${nextIndex}`,
+          baseUrl: 'https://example.local',
+          apiKey: '',
+          model: '',
+          models: [],
+          freeModels: [],
+          status: 'unverified',
+          inPool: false,
+          isManager: false,
+          modelVerified: false
+        };
+
+        state.providers.push(provider);
+        saveJSON(PROVIDERS_KEY, state.providers);
+        syncPoolFromProviders();
+        renderProviders();
+        renderPool();
+      });
+
+      document.getElementById('savePromptBtn').addEventListener('click', () => {
+        savePrompt();
+      });
+
+      document.getElementById('sendBtn').addEventListener('click', async () => {
+        const input = document.getElementById('chatInput');
+        const selectedAgent = state.pool.find((agent) => agent.id === state.selectedAgentId) || getActivePoolManager();
+        const text = input.value.trim();
+
+        if (!text || !selectedAgent) {
+          showSystemMessage('Select an in-pool agent before sending a message.', 'error');
+          return;
+        }
+
+        ensureSessionInstruction();
+        state.session.messages.push({ role: 'user', text, createdAt: new Date().toISOString() });
+        input.value = '';
+        renderMessages();
+        showSystemMessage(`${selectedAgent.name} is thinking...`, 'info');
+
+        try {
+          const reply = await requestAgentReply(selectedAgent);
+          state.session.messages.push({ role: 'assistant', text: reply.text, agentId: selectedAgent.id, usage: reply.usage, createdAt: new Date().toISOString() });
+          persistCurrentSession();
+          renderMessages();
+          showSystemMessage(`${selectedAgent.name} responded.`, 'success');
+        } catch (error) {
+          state.session.messages.pop();
+          renderMessages();
+          showSystemMessage(`Agent response failed: ${error.message}.`, 'error');
+        }
+      });
+
+      document.getElementById('sessionTitle').addEventListener('input', (event) => {
+        document.getElementById('sessionTitleActions').hidden = !event.target.value.trim();
+      });
+
+      document.getElementById('updateTitleBtn').addEventListener('click', () => {
+        updateCurrentSessionTitle();
+      });
+
+      document.getElementById('newSessionTitleBtn').addEventListener('click', () => {
+        startSessionWithTitle();
+      });
+
+      document.getElementById('agentSelect').addEventListener('change', (event) => {
+        state.selectedAgentId = event.target.value;
+        state.session.agentId = state.selectedAgentId;
+        persistCurrentSession();
+        const activeAgent = state.pool.find((agent) => agent.id === state.selectedAgentId);
+        if (activeAgent) {
+          showSystemMessage(`Chat agent selected: ${activeAgent.name} (${activeAgent.model}).`, 'info');
+        }
+      });
+
+      function initialize() {
+        const promptInput = document.getElementById('systemPromptInput');
+        promptInput.value = state.systemPrompt || defaultSystemPrompt;
+
+        if (!state.session || !Array.isArray(state.session.messages) || state.session.messages.length === 0) {
+          state.session = {
+            id: crypto.randomUUID(),
+            title: 'Local project session',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            agentId: '',
+            messages: [{ role: 'system', kind: 'instruction', text: state.systemPrompt || defaultSystemPrompt }]
+          };
+        } else {
+          state.session.id = state.session.id || crypto.randomUUID();
+          state.session.createdAt = state.session.createdAt || new Date().toISOString();
+          state.session.updatedAt = state.session.updatedAt || state.session.createdAt;
+          state.session.agentId = state.session.agentId || '';
+          state.session.messages = state.session.messages.filter((message) => {
+            const text = typeof message?.text === 'string' ? message.text : '';
+            return !text.includes('queued for local processing') && !text.includes('Response from ');
+          });
+          state.session.messages.forEach((message) => {
+            message.createdAt = message.createdAt || state.session.createdAt;
+          });
+          ensureSessionInstruction();
+        }
+
+        document.getElementById('sessionTitle').value = state.session.title || 'Local project session';
+        syncPoolFromProviders();
+
+        if (state.pool.length > 0 && !state.pool.some((agent) => agent.isManager)) {
+          state.pool[0].isManager = true;
+          state.selectedAgentId = state.pool[0].id;
+          saveJSON(AGENT_POOL_KEY, state.pool);
+        }
+
+        renderProviders();
+        renderPool();
+        renderMessages();
+        renderSessionList();
+        persistCurrentSession();
+        showSystemMessage('Workspace ready. Select an in-pool agent to start a session.', 'info');
+      }
+
+      function hydrateState() {
+        state.providers = normalizeProviders(loadJSON(PROVIDERS_KEY, defaultProviders));
+        state.pool = normalizePool(loadJSON(AGENT_POOL_KEY, []));
+        state.systemPrompt = loadJSON(PROMPT_KEY, defaultSystemPrompt) || defaultSystemPrompt;
+        if (state.systemPrompt === legacySystemPrompt) {
+          state.systemPrompt = defaultSystemPrompt;
+          saveJSON(PROMPT_KEY, state.systemPrompt);
+        }
+        state.session = loadJSON(SESSION_KEY, null);
+        state.sessions = Array.isArray(loadJSON(SESSIONS_KEY, []))
+          ? loadJSON(SESSIONS_KEY, []).filter((session) => session && Array.isArray(session.messages)).map((session) => ({
+            ...session,
+            id: session.id || crypto.randomUUID(),
+            createdAt: session.createdAt || new Date().toISOString()
+          }))
+          : [];
+      }
+
+      document.getElementById('loginForm').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const username = document.getElementById('loginUsername').value;
+        const password = document.getElementById('loginPassword').value;
+        const loginMessage = document.getElementById('loginMessage');
+
+        try {
+          const response = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            loginMessage.textContent = result.error || 'Sign in failed.';
+            return;
+          }
+
+          await unlockVault(password);
+          currentUsername = result.username;
+          hydrateState();
+          document.getElementById('loginPanel').hidden = true;
+          document.getElementById('workspace').hidden = false;
+          document.getElementById('profileStatus').textContent = `Signed in as ${username}`;
+          document.getElementById('loginForm').reset();
+          initialize();
+        } catch (error) {
+          vaultKey = null;
+          loginMessage.textContent = 'Unable to unlock encrypted app data.';
+        }
+      });
+
+      document.getElementById('signOutBtn').addEventListener('click', () => {
+        queueVaultWrite();
+        vaultKey = null;
+        vaultData = {};
+        document.getElementById('workspace').hidden = true;
+        document.getElementById('loginPanel').hidden = false;
+        document.getElementById('profileStatus').textContent = 'Signed out';
+        showSystemMessage('Signed out.', 'info');
+      });
+    </script>
+  </body>
+</html>
