@@ -1,6 +1,6 @@
 # Forest
 
-Local-first AI workspace with provider management, agent selection, chat sessions, encrypted browser storage, and encrypted backups.
+Local-first AI workspace with provider management, agent selection, chat sessions, encrypted browser storage, encrypted backups, and an initial multi-agent cycle workspace.
 
 ## Admin: development and deployment
 
@@ -27,6 +27,8 @@ Leave **admin login** unchecked. On first use, enter a local username and passwo
 Configure providers and verified models in the providers tab before chatting. The local account password is required to unlock the encrypted vault and restore backups.
 
 Backups use a separate generated backup key. Password changes do not invalidate the key. Store it securely; renewing it makes older backups unreadable.
+
+The **cycle** tab is the Phase 3 starting point for group chat. Select multiple verified agents, enter a seed message, and prepare the agent turn order. Multi-agent responses will be added in the next cycle step.
 
 ## Security warning
 

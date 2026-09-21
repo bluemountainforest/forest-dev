@@ -3,7 +3,64 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Forest</title>
   </head>
+  <body>
+    <div id="systemMessageBar" aria-live="polite">Ready.</div>
+
+    <section id="loginPanel">
+      <h2>Sign in</h2>
+      <form id="loginForm">
+        <label>Username <input id="loginUsername" autocomplete="username" required></label>
+        <label>Password <input id="loginPassword" type="password" autocomplete="current-password" required></label>
+        <label><input id="adminLoginCheckbox" type="checkbox"> admin login</label>
+        <button id="loginSubmitBtn" type="submit">Continue</button>
+      </form>
+      <p id="loginMessage" aria-live="polite"></p>
+    </section>
+
+    <main id="workspace" hidden>
+      <section>
+        <div>
+          <button type="button" data-tab="chat" class="tab-button active">chat</button>
+          <button type="button" data-tab="cycle" class="tab-button">cycle</button>
+          <button type="button" data-tab="providers" class="tab-button">providers</button>
+          <button type="button" data-tab="instruction" class="tab-button">instruction</button>
+          <button type="button" data-tab="profile" class="tab-button">profile</button>
+          <button type="button" data-tab="admin" id="adminTabButton" class="tab-button" hidden>admin</button>
+        </div>
+
+        <div id="providerTabChat">
+          <table>
+            <tr>
+              <td>
+                <h3>Chat session</h3>
+                <table>
+                  <tr>
+                    <th>Selected agent</th>
+                    <td><select id="agentSelect"></select></td>
+                  </tr>
+                  <tr>
+                    <th>Current session title</th>
+                    <td colspan="2">
+                      <input id="sessionTitle" type="text" value="Local project session">
+                      <span id="sessionTitleActions" hidden>
+                        <button type="button" id="updateTitleBtn">update title</button>
+                        <button type="button" id="newSessionTitleBtn">new session title</button>
+                      </span>
+                    </td>
+                  </tr>
+                </table>
+                <div id="chatMessages" aria-live="polite"></div>
+                <table>
+                  <tr>
+                    <th>Message</th>
+                    <td><textarea id="chatInput" rows="4" placeholder="Type a message for the selected agent..."></textarea></td>
+                    <td><button type="button" id="sendBtn">Send</button></td>
+                  </tr>
+                </table>
+              </td>
+              <td>
                 <table>
                   <thead><tr><th>Session</th><th>Created</th><th>Action</th></tr></thead>
                   <tbody id="sessionListBody"></tbody>
@@ -11,6 +68,23 @@
               </td>
             </tr>
           </table>
+        </div>
+
+        <div id="providerTabCycle" hidden>
+          <h3>Agent cycle</h3>
+          <p>Select two or more verified agents. The seed message will become the starting message for the group conversation.</p>
+          <table>
+            <thead><tr><th>Select</th><th>Agent</th><th>Provider</th><th>Model</th><th>Status</th></tr></thead>
+            <tbody id="cycleAgentTableBody"></tbody>
+          </table>
+          <p><strong id="cycleSelectionStatus">No agents selected.</strong></p>
+          <label>Seed message
+            <textarea id="cycleSeedInput" rows="5" placeholder="Enter the message the selected agents should deliberate on..."></textarea>
+          </label>
+          <p><button type="button" id="startCycleBtn">start cycle</button></p>
+          <h3>Cycle conversation</h3>
+          <p id="cycleConversationStatus">The selected agents will take turns in the next cycle step.</p>
+          <ol id="cycleTurnList"></ol>
         </div>
 
         <div id="providerTabProviders" hidden>
@@ -119,6 +193,7 @@
       const SESSIONS_KEY = 'forest-chat-sessions';
       const AGENT_POOL_KEY = 'forest-agent-pool';
       const PROMPT_KEY = 'forest-agent-system-prompt';
+      const CYCLE_KEY = 'forest-agent-cycle';
       const VAULT_KEY = 'forest-encrypted-vault';
       const LOCAL_ACCOUNT_KEY = 'forest-local-account';
       const BACKUP_KEY_DATA = 'forest-backup-secret-key';
@@ -324,6 +399,7 @@
                 [PROVIDERS_KEY]: defaultProviders,
                 [AGENT_POOL_KEY]: [],
                 [PROMPT_KEY]: defaultSystemPrompt,
+                [CYCLE_KEY]: { selectedAgentIds: [], seed: '', turns: [] },
                 [SESSION_KEY]: null,
                 [SESSIONS_KEY]: []
               };
@@ -337,10 +413,11 @@
             [PROVIDERS_KEY]: JSON.parse(localStorage.getItem(PROVIDERS_KEY) || 'null') || defaultProviders,
             [AGENT_POOL_KEY]: JSON.parse(localStorage.getItem(AGENT_POOL_KEY) || 'null') || [],
             [PROMPT_KEY]: localStorage.getItem(PROMPT_KEY) || defaultSystemPrompt,
+            [CYCLE_KEY]: { selectedAgentIds: [], seed: '', turns: [] },
             [SESSION_KEY]: JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'),
             [SESSIONS_KEY]: []
           };
-          [PROVIDERS_KEY, AGENT_POOL_KEY, PROMPT_KEY, SESSION_KEY].forEach((key) => localStorage.removeItem(key));
+          [PROVIDERS_KEY, AGENT_POOL_KEY, PROMPT_KEY, CYCLE_KEY, SESSION_KEY].forEach((key) => localStorage.removeItem(key));
           await persistVault();
         }
       }
@@ -420,6 +497,7 @@
           const saved = loadJSON(PROMPT_KEY, defaultSystemPrompt);
           return typeof saved === 'string' && saved.trim() ? saved : defaultSystemPrompt;
         })(),
+        cycle: loadJSON(CYCLE_KEY, { selectedAgentIds: [], seed: '', turns: [] }),
         selectedAgentId: '',
         session: loadJSON(SESSION_KEY, {
           title: 'Local project session',
@@ -440,6 +518,11 @@
       if ((state.systemPrompt || '').trim() !== (loadJSON(PROMPT_KEY, defaultSystemPrompt) || '').trim()) {
         saveJSON(PROMPT_KEY, state.systemPrompt || defaultSystemPrompt);
       }
+
+      state.cycle = state.cycle && typeof state.cycle === 'object' ? state.cycle : { selectedAgentIds: [], seed: '', turns: [] };
+      state.cycle.selectedAgentIds = Array.isArray(state.cycle.selectedAgentIds) ? state.cycle.selectedAgentIds : [];
+      state.cycle.seed = typeof state.cycle.seed === 'string' ? state.cycle.seed : '';
+      state.cycle.turns = Array.isArray(state.cycle.turns) ? state.cycle.turns : [];
 
 
       function showSystemMessage(text, type = 'info') {
@@ -682,6 +765,64 @@
         }
 
         resolveSelectedAgentId();
+        renderCycle();
+      }
+
+      function renderCycle() {
+        const tableBody = document.getElementById('cycleAgentTableBody');
+        const status = document.getElementById('cycleSelectionStatus');
+        const seedInput = document.getElementById('cycleSeedInput');
+        const turnList = document.getElementById('cycleTurnList');
+        if (!tableBody || !status || !seedInput || !turnList) {
+          return;
+        }
+
+        const validIds = new Set(state.pool.map((agent) => agent.id));
+        state.cycle.selectedAgentIds = state.cycle.selectedAgentIds.filter((id) => validIds.has(id));
+        tableBody.innerHTML = state.pool.map((agent) => `
+          <tr>
+            <td><input type="checkbox" data-cycle-agent="${escapeHtml(agent.id)}" ${state.cycle.selectedAgentIds.includes(agent.id) ? 'checked' : ''}></td>
+            <td>${escapeHtml(agent.name || `${agent.provider} agent`)}</td>
+            <td>${escapeHtml(agent.provider)}</td>
+            <td>${escapeHtml(agent.model)}</td>
+            <td>${escapeHtml(agent.status)}</td>
+          </tr>
+        `).join('') || '<tr><td colspan="5">No verified agents available. Configure and test agents in providers first.</td></tr>';
+
+        seedInput.value = state.cycle.seed;
+        const selectedAgents = state.pool.filter((agent) => state.cycle.selectedAgentIds.includes(agent.id));
+        status.textContent = selectedAgents.length === 0
+          ? 'No agents selected.'
+          : `${selectedAgents.length} agent${selectedAgents.length === 1 ? '' : 's'} selected.`;
+        turnList.innerHTML = state.cycle.turns.map((turn) => `<li>${escapeHtml(turn.agentName)}: ${escapeHtml(turn.status)}</li>`).join('');
+      }
+
+      function saveCycleState() {
+        saveJSON(CYCLE_KEY, state.cycle);
+        renderCycle();
+      }
+
+      function startCycle() {
+        const selectedAgents = state.pool.filter((agent) => state.cycle.selectedAgentIds.includes(agent.id));
+        const seed = state.cycle.seed.trim();
+        if (selectedAgents.length < 2) {
+          showSystemMessage('Select at least two verified agents for a cycle.', 'error');
+          return;
+        }
+        if (!seed) {
+          showSystemMessage('Enter a seed message before starting the cycle.', 'error');
+          return;
+        }
+
+        state.cycle.turns = selectedAgents.map((agent, index) => ({
+          agentId: agent.id,
+          agentName: agent.name || `${agent.provider} agent`,
+          order: index + 1,
+          status: index === 0 ? 'ready for first response' : 'waiting for previous turn'
+        }));
+        saveCycleState();
+        document.getElementById('cycleConversationStatus').textContent = `Seed message ready. ${selectedAgents.length} agents are queued in order.`;
+        showSystemMessage('Cycle seed prepared. Agent responses will be added in the next cycle step.', 'success');
       }
 
       function ensureSessionInstruction() {
@@ -1298,6 +1439,7 @@
         return {
           providers: state.providers,
           pool: state.pool,
+          cycle: state.cycle,
           instruction: state.systemPrompt,
           currentSession: state.session,
           sessions: state.sessions,
@@ -1391,11 +1533,15 @@
         const backup = await decryptBackup(stored, 'full', secret);
         state.providers = normalizeProviders(backup.value.providers);
         state.pool = normalizePool(backup.value.pool);
+        state.cycle = backup.value.cycle && typeof backup.value.cycle === 'object'
+          ? backup.value.cycle
+          : { selectedAgentIds: [], seed: '', turns: [] };
         state.systemPrompt = backup.value.instruction || defaultSystemPrompt;
         state.session = backup.value.currentSession || state.session;
         state.sessions = Array.isArray(backup.value.sessions) ? backup.value.sessions : [];
         saveJSON(PROVIDERS_KEY, state.providers);
         saveJSON(AGENT_POOL_KEY, state.pool);
+        saveJSON(CYCLE_KEY, state.cycle);
         saveJSON(PROMPT_KEY, state.systemPrompt);
         saveJSON(SESSION_KEY, state.session);
         saveJSON(SESSIONS_KEY, state.sessions);
@@ -1426,6 +1572,7 @@
         currentUsername = '';
         state.providers = normalizeProviders(defaultProviders);
         state.pool = normalizePool([]);
+        state.cycle = { selectedAgentIds: [], seed: '', turns: [] };
         state.systemPrompt = defaultSystemPrompt;
         state.selectedAgentId = '';
         state.session = {
@@ -1455,6 +1602,7 @@
         button.addEventListener('click', () => {
           const tabName = button.dataset.tab;
           document.getElementById('providerTabChat').hidden = tabName !== 'chat';
+          document.getElementById('providerTabCycle').hidden = tabName !== 'cycle';
           document.getElementById('providerTabProviders').hidden = tabName !== 'providers';
           document.getElementById('providerTabInstruction').hidden = tabName !== 'instruction';
           document.getElementById('providerTabProfile').hidden = tabName !== 'profile';
@@ -1510,6 +1658,24 @@
           removeProvider(providerId);
         }
       });
+
+      document.getElementById('cycleAgentTableBody').addEventListener('change', (event) => {
+        const checkbox = event.target.closest('input[data-cycle-agent]');
+        if (!checkbox) {
+          return;
+        }
+        const agentId = checkbox.dataset.cycleAgent;
+        state.cycle.selectedAgentIds = checkbox.checked
+          ? [...new Set([...state.cycle.selectedAgentIds, agentId])]
+          : state.cycle.selectedAgentIds.filter((id) => id !== agentId);
+        saveCycleState();
+      });
+
+      document.getElementById('cycleSeedInput').addEventListener('input', (event) => {
+        state.cycle.seed = event.target.value;
+        saveJSON(CYCLE_KEY, state.cycle);
+      });
+      document.getElementById('startCycleBtn').addEventListener('click', startCycle);
 
       let restoreCategory = '';
       let restoreFull = false;
@@ -1723,6 +1889,11 @@
       function hydrateState() {
         state.providers = normalizeProviders(loadJSON(PROVIDERS_KEY, defaultProviders));
         state.pool = normalizePool(loadJSON(AGENT_POOL_KEY, []));
+        state.cycle = loadJSON(CYCLE_KEY, { selectedAgentIds: [], seed: '', turns: [] });
+        state.cycle = state.cycle && typeof state.cycle === 'object' ? state.cycle : { selectedAgentIds: [], seed: '', turns: [] };
+        state.cycle.selectedAgentIds = Array.isArray(state.cycle.selectedAgentIds) ? state.cycle.selectedAgentIds : [];
+        state.cycle.seed = typeof state.cycle.seed === 'string' ? state.cycle.seed : '';
+        state.cycle.turns = Array.isArray(state.cycle.turns) ? state.cycle.turns : [];
         state.systemPrompt = loadJSON(PROMPT_KEY, defaultSystemPrompt) || defaultSystemPrompt;
         if (state.systemPrompt === legacySystemPrompt) {
           state.systemPrompt = defaultSystemPrompt;
