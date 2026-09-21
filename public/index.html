@@ -3,65 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Forest</title>
   </head>
-  <body>
-    <div id="systemMessageBar" aria-live="polite">Ready.</div>
-
-    <section id="loginPanel">
-      <h2 id="loginTitle">Sign in</h2>
-      <form id="loginForm">
-        <label>Username <input id="loginUsername" autocomplete="username" required></label>
-        <label>Password <input id="loginPassword" type="password" autocomplete="current-password" required></label>
-        <label><input id="adminLoginCheckbox" type="checkbox"> admin login</label>
-        <button id="loginSubmitBtn" type="submit">Continue</button>
-      </form>
-      <p id="loginMessage" aria-live="polite"></p>
-    </section>
-
-    <main id="workspace" hidden>
-      <section>
-    
-        <div>
-          <button type="button" data-tab="chat" class="tab-button active">chat</button>
-          <button type="button" data-tab="providers" class="tab-button">providers</button>
-          <button type="button" data-tab="instruction" class="tab-button">instruction</button>
-          <button type="button" data-tab="profile" class="tab-button">profile</button>
-          <button type="button" data-tab="admin" id="adminTabButton" class="tab-button" hidden>admin</button>
-        </div>
-
-        <div id="providerTabChat">
-          <table>
-            <tr>
-              <td>
-                <h3>Chat session</h3>
-                <table>
-                  <tr>
-                    <th>Selected agent</th>
-                    <td><select id="agentSelect"></select></td>
-                  </tr>
-                  <tr>
-                    <th>Current session title</th>
-                    <td colspan="2">
-                      <input id="sessionTitle" type="text" value="Local project session">
-                      <span id="sessionTitleActions" hidden>
-                        <button type="button" id="updateTitleBtn">update title</button>
-                        <button type="button" id="newSessionTitleBtn">new session title</button>
-                      </span>
-                    </td>
-                  </tr>
-                </table>
-                <div id="chatMessages" aria-live="polite"></div>
-                <table>
-                  <tr>
-                    <th>Message</th>
-                    <td><textarea id="chatInput" rows="4" placeholder="Type a message for the selected agent..."></textarea></td>
-                    <td><button type="button" id="sendBtn">Send</button></td>
-                  </tr>
-                </table>
-              </td>
-              <td>
-                <h3>Chat sessions</h3>
                 <table>
                   <thead><tr><th>Session</th><th>Created</th><th>Action</th></tr></thead>
                   <tbody id="sessionListBody"></tbody>
@@ -122,7 +64,16 @@
           <button type="button" id="resetVaultBtn">reset local vault</button>
 
           <h3>Backup</h3>
+          <p>Backups use a separate secret key. Keep the key safe; it is required to restore backups.</p>
+          <p><strong id="backupKeyStatus">Backup key: not created</strong></p>
+          <button type="button" id="generateBackupKeyBtn">generate backup key</button>
+          <button type="button" id="renewBackupKeyBtn">renew backup key</button>
+          <p><textarea id="backupKeyOutput" rows="2" readonly placeholder="Your backup key appears here after generation."></textarea></p>
           <p>Download or restore each encrypted data category separately.</p>
+          <p>
+            <button type="button" id="downloadFullBackupBtn">download full backup</button>
+            <button type="button" id="restoreFullBackupBtn">restore full backup</button>
+          </p>
           <table>
             <thead><tr><th>Data</th><th>Download</th><th>Restore</th></tr></thead>
             <tbody>
@@ -143,6 +94,15 @@
             <label>New admin password <input id="adminNewPasswordInput" type="password" autocomplete="new-password"></label>
             <label>Confirm admin password <input id="adminConfirmPasswordInput" type="password" autocomplete="new-password"></label>
             <button type="button" id="adminChangePasswordBtn">change admin password</button>
+
+            <h3>Admin backups</h3>
+            <p>Use a separate secret key for encrypted admin backups.</p>
+            <p><strong id="adminBackupKeyStatus">Backup key: not created</strong></p>
+            <button type="button" id="generateAdminBackupKeyBtn">generate backup key</button>
+            <button type="button" id="renewAdminBackupKeyBtn">renew backup key</button>
+            <p><textarea id="adminBackupKeyOutput" rows="2" readonly placeholder="Your backup key appears here after generation."></textarea></p>
+            <button type="button" id="downloadAdminFullBackupBtn">download full backup</button>
+            <button type="button" id="restoreAdminFullBackupBtn">restore full backup</button>
           </div>
         </div>
 
@@ -161,6 +121,8 @@
       const PROMPT_KEY = 'forest-agent-system-prompt';
       const VAULT_KEY = 'forest-encrypted-vault';
       const LOCAL_ACCOUNT_KEY = 'forest-local-account';
+      const BACKUP_KEY_DATA = 'forest-backup-secret-key';
+      const ADMIN_BACKUP_KEY = 'forest-admin-backup-secret-key';
       let vaultKey = null;
       let vaultData = {};
       let vaultWrite = Promise.resolve();
@@ -219,6 +181,57 @@
         let binary = '';
         bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
         return btoa(binary);
+      }
+
+      async function deriveBackupKey(secret) {
+        const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), 'PBKDF2', false, ['deriveKey']);
+        return crypto.subtle.deriveKey(
+          { name: 'PBKDF2', salt: new TextEncoder().encode('forest-backup-key-v1'), iterations: 150000, hash: 'SHA-256' },
+          material,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+      }
+
+      function generateBackupSecret() {
+        return bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
+      }
+
+      function getStoredBackupSecret() {
+        if (currentRole === 'admin') {
+          return localStorage.getItem(ADMIN_BACKUP_KEY) || '';
+        }
+        return loadJSON(BACKUP_KEY_DATA, '');
+      }
+
+      function setStoredBackupSecret(secret) {
+        if (currentRole === 'admin') {
+          localStorage.setItem(ADMIN_BACKUP_KEY, secret);
+          return;
+        }
+        saveJSON(BACKUP_KEY_DATA, secret);
+      }
+
+      function updateBackupKeyUi() {
+        const secret = getStoredBackupSecret();
+        const localStatus = document.getElementById('backupKeyStatus');
+        const localOutput = document.getElementById('backupKeyOutput');
+        const adminStatus = document.getElementById('adminBackupKeyStatus');
+        const adminOutput = document.getElementById('adminBackupKeyOutput');
+        if (localStatus) localStatus.textContent = secret ? 'Backup key: stored' : 'Backup key: not created';
+        if (adminStatus) adminStatus.textContent = secret ? 'Backup key: stored' : 'Backup key: not created';
+        if (localOutput && document.activeElement !== localOutput) localOutput.value = secret;
+        if (adminOutput && document.activeElement !== adminOutput) adminOutput.value = secret;
+      }
+
+      function renewBackupSecret() {
+        if (getStoredBackupSecret() && !window.confirm('Renewing the backup key makes existing backups unreadable. Continue?')) {
+          return;
+        }
+        setStoredBackupSecret(generateBackupSecret());
+        updateBackupKeyUi();
+        showSystemMessage('Backup key renewed. Store the new key securely; existing backups require the old key.', 'success');
       }
 
       function clearLocalAppData() {
@@ -428,6 +441,7 @@
         saveJSON(PROMPT_KEY, state.systemPrompt || defaultSystemPrompt);
       }
 
+
       function showSystemMessage(text, type = 'info') {
         const bar = document.getElementById('systemMessageBar');
         if (!bar) {
@@ -447,6 +461,7 @@
         document.getElementById('adminStatus').textContent = isAdmin
           ? `Signed in as ${currentUsername}`
           : 'Admin signed out.';
+        updateBackupKeyUi();
       }
 
       function generatePasswordHash(password, saltBase64) {
@@ -1279,26 +1294,69 @@
         return values[category];
       }
 
-      async function downloadBackup(category) {
+      function fullBackupValue() {
+        return {
+          providers: state.providers,
+          pool: state.pool,
+          instruction: state.systemPrompt,
+          currentSession: state.session,
+          sessions: state.sessions,
+          profile: { username: currentUsername }
+        };
+      }
+
+      async function encryptBackup(value, category, secret) {
+        if (!secret) {
+          throw new Error('Generate or enter a backup key before creating a backup.');
+        }
+        const key = await deriveBackupKey(secret);
         const iv = crypto.getRandomValues(new Uint8Array(12));
-        const payload = new TextEncoder().encode(JSON.stringify({ category, value: backupValue(category), createdAt: new Date().toISOString() }));
-        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, vaultKey, payload);
-        const blob = new Blob([JSON.stringify({ category, iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(encrypted)) })], { type: 'application/json' });
+        const payload = new TextEncoder().encode(JSON.stringify({ category, value, createdAt: new Date().toISOString() }));
+        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, payload);
+        return { category, version: 1, iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(encrypted)) };
+      }
+
+      async function decryptBackup(stored, expectedCategory, secret) {
+        if (!secret) {
+          throw new Error('A backup key is required to restore this backup.');
+        }
+        if (stored.category !== expectedCategory) {
+          throw new Error('backup category does not match this restore action');
+        }
+        const key = await deriveBackupKey(secret);
+        const decrypted = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: base64ToBytes(stored.iv) },
+          key,
+          base64ToBytes(stored.data)
+        );
+        return JSON.parse(new TextDecoder().decode(decrypted));
+      }
+
+      function downloadJsonFile(filename, value) {
+        const blob = new Blob([JSON.stringify(value)], { type: 'application/json' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = `forest-${category}-backup.json`;
+        link.download = filename;
         link.click();
         URL.revokeObjectURL(link.href);
+      }
+
+      async function downloadBackup(category) {
+        const backup = await encryptBackup(backupValue(category), category, getStoredBackupSecret());
+        downloadJsonFile(`forest-${category}-backup.json`, backup);
         showSystemMessage(`${category} backup downloaded as encrypted data.`, 'success');
+      }
+
+      async function downloadFullBackup() {
+        const backup = await encryptBackup(fullBackupValue(), 'full', getStoredBackupSecret());
+        downloadJsonFile('forest-full-backup.json', backup);
+        showSystemMessage('Full encrypted backup downloaded.', 'success');
       }
 
       async function restoreBackup(file, expectedCategory) {
         const stored = JSON.parse(await file.text());
-        if (stored.category !== expectedCategory) {
-          throw new Error('backup category does not match this restore action');
-        }
-        const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(stored.iv) }, vaultKey, base64ToBytes(stored.data));
-        const backup = JSON.parse(new TextDecoder().decode(decrypted));
+        const secret = window.prompt('Enter the backup key to decrypt this backup:');
+        const backup = await decryptBackup(stored, expectedCategory, secret);
         if (expectedCategory === 'providers') {
           state.providers = normalizeProviders(backup.value);
           saveJSON(PROVIDERS_KEY, state.providers);
@@ -1325,6 +1383,29 @@
           renderSessionList();
         }
         showSystemMessage(`${expectedCategory} backup restored.`, 'success');
+      }
+
+      async function restoreFullBackup(file) {
+        const stored = JSON.parse(await file.text());
+        const secret = window.prompt('Enter the backup key to decrypt this full backup:');
+        const backup = await decryptBackup(stored, 'full', secret);
+        state.providers = normalizeProviders(backup.value.providers);
+        state.pool = normalizePool(backup.value.pool);
+        state.systemPrompt = backup.value.instruction || defaultSystemPrompt;
+        state.session = backup.value.currentSession || state.session;
+        state.sessions = Array.isArray(backup.value.sessions) ? backup.value.sessions : [];
+        saveJSON(PROVIDERS_KEY, state.providers);
+        saveJSON(AGENT_POOL_KEY, state.pool);
+        saveJSON(PROMPT_KEY, state.systemPrompt);
+        saveJSON(SESSION_KEY, state.session);
+        saveJSON(SESSIONS_KEY, state.sessions);
+        document.getElementById('systemPromptInput').value = state.systemPrompt;
+        document.getElementById('sessionTitle').value = state.session.title || 'Local project session';
+        renderProviders();
+        renderPool();
+        renderMessages();
+        renderSessionList();
+        showSystemMessage('Full encrypted backup restored.', 'success');
       }
 
       function savePrompt() {
@@ -1431,27 +1512,50 @@
       });
 
       let restoreCategory = '';
+      let restoreFull = false;
       document.querySelectorAll('button[data-backup]').forEach((button) => {
-        button.addEventListener('click', () => downloadBackup(button.dataset.backup));
+        button.addEventListener('click', () => downloadBackup(button.dataset.backup).catch((error) => showSystemMessage(`Backup failed: ${error.message}.`, 'error')));
       });
       document.querySelectorAll('button[data-restore]').forEach((button) => {
         button.addEventListener('click', () => {
           restoreCategory = button.dataset.restore;
+          restoreFull = false;
           document.getElementById('restoreFileInput').click();
         });
       });
+      document.getElementById('downloadFullBackupBtn').addEventListener('click', () => downloadFullBackup().catch((error) => showSystemMessage(`Backup failed: ${error.message}.`, 'error')));
+      document.getElementById('restoreFullBackupBtn').addEventListener('click', () => {
+        restoreCategory = '';
+        restoreFull = true;
+        document.getElementById('restoreFileInput').click();
+      });
+      document.getElementById('downloadAdminFullBackupBtn').addEventListener('click', () => downloadFullBackup().catch((error) => showSystemMessage(`Backup failed: ${error.message}.`, 'error')));
+      document.getElementById('restoreAdminFullBackupBtn').addEventListener('click', () => {
+        restoreCategory = '';
+        restoreFull = true;
+        document.getElementById('restoreFileInput').click();
+      });
+      document.getElementById('generateBackupKeyBtn').addEventListener('click', renewBackupSecret);
+      document.getElementById('renewBackupKeyBtn').addEventListener('click', renewBackupSecret);
+      document.getElementById('generateAdminBackupKeyBtn').addEventListener('click', renewBackupSecret);
+      document.getElementById('renewAdminBackupKeyBtn').addEventListener('click', renewBackupSecret);
       document.getElementById('restoreFileInput').addEventListener('change', async (event) => {
         const file = event.target.files[0];
-        if (!file || !restoreCategory) {
+        if (!file || (!restoreCategory && !restoreFull)) {
           return;
         }
         try {
-          await restoreBackup(file, restoreCategory);
+          if (restoreFull) {
+            await restoreFullBackup(file);
+          } else {
+            await restoreBackup(file, restoreCategory);
+          }
         } catch (error) {
           showSystemMessage(`Backup restore failed: ${error.message}.`, 'error');
         } finally {
           event.target.value = '';
           restoreCategory = '';
+          restoreFull = false;
         }
       });
 
@@ -1790,6 +1894,9 @@
       });
 
       document.getElementById('signOutBtn').addEventListener('click', () => {
+        if (currentRole === 'admin') {
+          fetch('/api/admin/logout', { method: 'POST' }).catch(() => undefined);
+        }
         queueVaultWrite();
         vaultKey = null;
         vaultData = {};

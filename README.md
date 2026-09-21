@@ -26,6 +26,8 @@ Leave **admin login** unchecked. On first use, enter a local username and passwo
 
 Configure providers and verified models in the providers tab before chatting. The local account password is required to unlock the encrypted vault and restore backups.
 
+Backups use a separate generated backup key. Password changes do not invalidate the key. Store it securely; renewing it makes older backups unreadable.
+
 ## Security warning
 
 Do not share sensitive or confidential data in chat unless both the selected provider/model and the network connection are trusted. Provider API requests may send conversation content outside the local device.
