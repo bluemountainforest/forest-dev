@@ -106,6 +106,18 @@
           <h3>Profile</h3>
           <p id="profileStatus">Signed out</p>
           <button type="button" id="signOutBtn">Sign out</button>
+
+          <h3>Account setup</h3>
+          <p>Set the server account password for this local installation. The password is also used to unlock the encrypted local app data.</p>
+          <label>Current password <input id="currentPasswordInput" type="password" autocomplete="current-password"></label>
+          <label>New password <input id="newPasswordInput" type="password" autocomplete="new-password"></label>
+          <label>Confirm new password <input id="confirmPasswordInput" type="password" autocomplete="new-password"></label>
+          <button type="button" id="changePasswordBtn">change password</button>
+
+          <h3>Reset local vault</h3>
+          <p>This clears the locally encrypted app data and starts the browser state fresh. It does not change the server-side account settings.</p>
+          <button type="button" id="resetVaultBtn">reset local vault</button>
+
           <h3>Backup</h3>
           <p>Download or restore each encrypted data category separately.</p>
           <table>
@@ -1110,6 +1122,49 @@
         renderMessages();
       }
 
+      function resetLocalVault() {
+        const confirmed = window.confirm('Reset the local encrypted vault? This clears local app data and returns the browser state to a fresh default state.');
+        if (!confirmed) {
+          return;
+        }
+
+        localStorage.removeItem(VAULT_KEY);
+        localStorage.removeItem(PROVIDERS_KEY);
+        localStorage.removeItem(AGENT_POOL_KEY);
+        localStorage.removeItem(PROMPT_KEY);
+        localStorage.removeItem(SESSION_KEY);
+        localStorage.removeItem(SESSIONS_KEY);
+
+        vaultData = {};
+        vaultKey = null;
+        currentUsername = '';
+        state.providers = normalizeProviders(defaultProviders);
+        state.pool = normalizePool([]);
+        state.systemPrompt = defaultSystemPrompt;
+        state.selectedAgentId = '';
+        state.session = {
+          id: crypto.randomUUID(),
+          title: 'Local project session',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          agentId: '',
+          messages: [{ role: 'system', kind: 'instruction', text: defaultSystemPrompt }]
+        };
+        state.sessions = [];
+
+        document.getElementById('sessionTitle').value = state.session.title;
+        document.getElementById('systemPromptInput').value = state.systemPrompt;
+        document.getElementById('loginForm').reset();
+        document.getElementById('workspace').hidden = true;
+        document.getElementById('loginPanel').hidden = false;
+        document.getElementById('profileStatus').textContent = 'Signed out';
+        renderProviders();
+        renderPool();
+        renderMessages();
+        renderSessionList();
+        showSystemMessage('Local encrypted vault reset. Sign in again to start fresh.', 'info');
+      }
+
       document.querySelectorAll('.tab-button').forEach((button) => {
         button.addEventListener('click', () => {
           const tabName = button.dataset.tab;
@@ -1351,42 +1406,126 @@
           : [];
       }
 
+      async function getAccountStatus() {
+        try {
+          const response = await fetch('/api/auth/status');
+          if (!response.ok) {
+            return { configured: false, username: null, setupRequired: true };
+          }
+          return await response.json().catch(() => ({ configured: false, username: null, setupRequired: true }));
+        } catch (_error) {
+          return { configured: false, username: null, setupRequired: true };
+        }
+      }
+
+      async function handleInitialSetup(username, password) {
+        const response = await fetch('/api/auth/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(result.error || 'Account setup failed.');
+        }
+        return result;
+      }
+
+      async function changeAccountPassword(currentPassword, newPassword) {
+        const response = await fetch('/api/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: currentUsername || 'admin', currentPassword, newPassword })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(result.error || 'Password change failed.');
+        }
+        return result;
+      }
+
       document.getElementById('loginForm').addEventListener('submit', async (event) => {
         event.preventDefault();
-        const username = document.getElementById('loginUsername').value;
+        const username = document.getElementById('loginUsername').value.trim();
         const password = document.getElementById('loginPassword').value;
         const loginMessage = document.getElementById('loginMessage');
 
         try {
-          const response = await fetch('/api/auth/login', {
+          const status = await getAccountStatus();
+          const needsSetup = !status.configured;
+          const endpoint = needsSetup ? '/api/auth/setup' : '/api/auth/login';
+          const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password })
           });
           const result = await response.json().catch(() => ({}));
           if (!response.ok) {
-            loginMessage.textContent = result.error || 'Sign in failed.';
-            return;
+            throw new Error(result.error || (needsSetup ? 'Account setup failed.' : 'Sign in failed.'));
           }
 
           await unlockVault(password);
-          currentUsername = result.username;
+          currentUsername = result.username || username;
           hydrateState();
           document.getElementById('loginPanel').hidden = true;
           document.getElementById('workspace').hidden = false;
-          document.getElementById('profileStatus').textContent = `Signed in as ${username}`;
+          document.getElementById('profileStatus').textContent = `Signed in as ${currentUsername}`;
           document.getElementById('loginForm').reset();
           initialize();
+          loginMessage.textContent = needsSetup ? 'Local account setup complete.' : 'Signed in.';
         } catch (error) {
           vaultKey = null;
-          loginMessage.textContent = 'Unable to unlock encrypted app data.';
+          if (error.message && error.message.includes('decrypt')) {
+            loginMessage.textContent = 'Password does not match the saved encrypted app data. Use the profile tab to update the account password or reset the vault to start fresh.';
+            return;
+          }
+          loginMessage.textContent = error.message || 'Unable to unlock encrypted app data.';
         }
+      });
+
+      document.getElementById('changePasswordBtn').addEventListener('click', async () => {
+        const currentPassword = document.getElementById('currentPasswordInput').value;
+        const newPassword = document.getElementById('newPasswordInput').value;
+        const confirmPassword = document.getElementById('confirmPasswordInput').value;
+
+        if (!currentPassword || !newPassword || !confirmPassword) {
+          showSystemMessage('Enter the current password and the new password twice before updating the account.', 'error');
+          return;
+        }
+
+        if (newPassword !== confirmPassword) {
+          showSystemMessage('The new password and confirmation do not match.', 'error');
+          return;
+        }
+
+        try {
+          const result = await changeAccountPassword(currentPassword, newPassword);
+          const nextKey = await deriveVaultKey(newPassword);
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const payload = new TextEncoder().encode(JSON.stringify(vaultData));
+          const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, nextKey, payload);
+          localStorage.setItem(VAULT_KEY, JSON.stringify({ iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(encrypted)) }));
+          vaultKey = nextKey;
+          currentUsername = result.username || currentUsername;
+          document.getElementById('profileStatus').textContent = `Signed in as ${currentUsername}`;
+          document.getElementById('currentPasswordInput').value = '';
+          document.getElementById('newPasswordInput').value = '';
+          document.getElementById('confirmPasswordInput').value = '';
+          showSystemMessage(`Password updated for ${currentUsername}. Local encrypted data has been re-keyed successfully.`, 'success');
+        } catch (error) {
+          showSystemMessage(`Password update failed: ${error.message}.`, 'error');
+        }
+      });
+
+      document.getElementById('resetVaultBtn').addEventListener('click', () => {
+        resetLocalVault();
       });
 
       document.getElementById('signOutBtn').addEventListener('click', () => {
         queueVaultWrite();
         vaultKey = null;
         vaultData = {};
+        currentUsername = '';
         document.getElementById('workspace').hidden = true;
         document.getElementById('loginPanel').hidden = false;
         document.getElementById('profileStatus').textContent = 'Signed out';
