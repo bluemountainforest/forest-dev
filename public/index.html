@@ -526,6 +526,38 @@
         return `${Math.floor(hours / 24)}d ago`;
       }
 
+      function formatDuration(milliseconds) {
+        const safeMs = Number.isFinite(milliseconds) ? Math.max(0, Math.round(milliseconds)) : 0;
+        if (safeMs < 1000) {
+          return `${safeMs}ms`;
+        }
+        const seconds = safeMs / 1000;
+        if (seconds < 60) {
+          return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+        }
+        const minutes = Math.floor(seconds / 60);
+        const remainder = Math.round(seconds % 60);
+        return `${minutes}m ${remainder}s`;
+      }
+
+      function resolveMessageResponseTime(message, index, messages) {
+        if (Number.isFinite(message.responseTimeMs) && message.responseTimeMs >= 0) {
+          return Number(message.responseTimeMs);
+        }
+
+        if (!messages || index <= 0) {
+          return 0;
+        }
+
+        const currentTime = new Date(message.createdAt || Date.now()).getTime();
+        const previousTime = new Date(messages[index - 1].createdAt || currentTime).getTime();
+        if (Number.isFinite(currentTime) && Number.isFinite(previousTime) && currentTime >= previousTime) {
+          return Math.max(0, currentTime - previousTime);
+        }
+
+        return 0;
+      }
+
       function renderSessionHeader() {
         const sessionStart = state.session.createdAt || new Date().toISOString();
         const sessionUpdated = state.session.updatedAt || sessionStart;
@@ -578,9 +610,14 @@
 
       function renderMessages() {
         const chats = document.getElementById('chatMessages');
-        chats.innerHTML = renderSessionHeader() + state.session.messages
+        const preparedMessages = state.session.messages
           .filter((message) => !(message.role === 'system' && message.kind === 'instruction'))
-          .map((message) => {
+          .map((message, index, list) => ({
+            ...message,
+            responseTimeMs: resolveMessageResponseTime(message, index, list)
+          }));
+
+        chats.innerHTML = renderSessionHeader() + preparedMessages.map((message) => {
           const label = message.role === 'user'
             ? 'User'
             : message.role === 'assistant'
@@ -589,7 +626,8 @@
                 ? 'Session'
                 : 'System';
           const createdAt = messageTime(message);
-          return `<p><strong>${label}:</strong> ${escapeHtml(message.text)} <small>(${escapeHtml(relativeTime(createdAt))})</small></p>`;
+          const responseTime = formatDuration(message.responseTimeMs || 0);
+          return `<p><strong>${label}:</strong> ${escapeHtml(message.text)} <small>(response ${escapeHtml(responseTime)}) (${escapeHtml(relativeTime(createdAt))})</small></p>`;
         }).join('');
         chats.scrollTop = chats.scrollHeight;
       }
@@ -1302,15 +1340,33 @@
           return;
         }
 
+        const previousMessage = state.session.messages[state.session.messages.length - 1];
+        const userMessageAt = new Date().toISOString();
         ensureSessionInstruction();
-        state.session.messages.push({ role: 'user', text, createdAt: new Date().toISOString() });
+        state.session.messages.push({
+          role: 'user',
+          text,
+          createdAt: userMessageAt,
+          responseTimeMs: previousMessage && previousMessage.createdAt
+            ? Math.max(0, new Date(userMessageAt).getTime() - new Date(previousMessage.createdAt).getTime())
+            : 0
+        });
         input.value = '';
         renderMessages();
         showSystemMessage(`${selectedAgent.name} is thinking...`, 'info');
 
         try {
+          const startedAt = Date.now();
           const reply = await requestAgentReply(selectedAgent);
-          state.session.messages.push({ role: 'assistant', text: reply.text, agentId: selectedAgent.id, usage: reply.usage, createdAt: new Date().toISOString() });
+          const responseTimeMs = Math.max(0, Date.now() - startedAt);
+          state.session.messages.push({
+            role: 'assistant',
+            text: reply.text,
+            agentId: selectedAgent.id,
+            usage: reply.usage,
+            createdAt: new Date().toISOString(),
+            responseTimeMs
+          });
           persistCurrentSession();
           renderMessages();
           showSystemMessage(`${selectedAgent.name} responded.`, 'success');
@@ -1365,9 +1421,11 @@
             const text = typeof message?.text === 'string' ? message.text : '';
             return !text.includes('queued for local processing') && !text.includes('Response from ');
           });
-          state.session.messages.forEach((message) => {
-            message.createdAt = message.createdAt || state.session.createdAt;
-          });
+          state.session.messages = state.session.messages.map((message, index, list) => ({
+            ...message,
+            createdAt: message.createdAt || state.session.createdAt,
+            responseTimeMs: resolveMessageResponseTime(message, index, list)
+          }));
           ensureSessionInstruction();
         }
 
@@ -1401,7 +1459,14 @@
           ? loadJSON(SESSIONS_KEY, []).filter((session) => session && Array.isArray(session.messages)).map((session) => ({
             ...session,
             id: session.id || crypto.randomUUID(),
-            createdAt: session.createdAt || new Date().toISOString()
+            createdAt: session.createdAt || new Date().toISOString(),
+            messages: Array.isArray(session.messages)
+              ? session.messages.map((message, index, list) => ({
+                  ...message,
+                  createdAt: message.createdAt || session.createdAt || new Date().toISOString(),
+                  responseTimeMs: resolveMessageResponseTime(message, index, list)
+                }))
+              : []
           }))
           : [];
       }
